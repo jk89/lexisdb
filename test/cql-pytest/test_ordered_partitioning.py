@@ -132,19 +132,24 @@ def test_range_on_exact_type(cql, test_keyspace, typ, vals):
         assert [r.v for r in cql.execute(f"SELECT v FROM {table} WHERE k <= {vals[mid]}")] == list(range(0, mid + 1))
 
 
-@pytest.mark.parametrize("typ,vals", [
-    ("double", ["-1.5", "0.5", "2.5"]),
-    ("float", ["-1.5", "0.5", "2.5"]),
-])
-def test_range_on_inexact_type_needs_filtering(cql, test_keyspace, typ, vals):
-    # These encodings do not sort exactly like CQL, so a range on them is
-    # not a token range: it keeps requiring ALLOW FILTERING, and still works with it.
-    with new_test_table(cql, test_keyspace, f"k {typ} PRIMARY KEY, v int") as table:
-        for v in vals:
-            cql.execute(f"INSERT INTO {table} (k, v) VALUES ({v}, 0)")
-        with pytest.raises(InvalidRequest):
-            cql.execute(f"SELECT k FROM {table} WHERE k > 0")
-        assert len(list(cql.execute(f"SELECT k FROM {table} WHERE k > 0 ALLOW FILTERING"))) == 2
+@pytest.mark.parametrize("typ", ["double", "float"])
+def test_range_on_float_type(cql, test_keyspace, typ):
+    # Floats compare as in Java (-0.0 < 0.0, NaN above everything), which the
+    # encoding matches, so ranges on them are token ranges too and need no
+    # ALLOW FILTERING. The results equal the ALLOW FILTERING ones on a
+    # regular column.
+    vals = ["-Infinity", "-1.5", "-0.0", "0.0", "0.5", "2.5", "Infinity", "NaN"]
+    with new_test_table(cql, test_keyspace, f"k {typ} PRIMARY KEY, v int") as table, \
+         new_test_table(cql, test_keyspace, f"p int PRIMARY KEY, w {typ}") as oracle:
+        for i, v in enumerate(vals):
+            cql.execute(f"INSERT INTO {table} (k, v) VALUES ({v}, {i})")
+            cql.execute(f"INSERT INTO {oracle} (p, w) VALUES ({i}, {v})")
+        assert [r.v for r in cql.execute(f"SELECT v FROM {table}")] == list(range(len(vals)))
+        for op in ['<', '<=', '>', '>=']:
+            for b in ["-1.5", "-0.0", "0.0", "Infinity", "NaN"]:
+                got = sorted(r.v for r in cql.execute(f"SELECT v FROM {table} WHERE k {op} {b}"))
+                want = sorted(r.p for r in cql.execute(f"SELECT p FROM {oracle} WHERE w {op} {b} ALLOW FILTERING"))
+                assert got == want, (op, b)
 
 
 def test_alter_partition_key_type_rejected(cql, test_keyspace):

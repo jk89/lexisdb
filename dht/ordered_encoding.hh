@@ -7,8 +7,14 @@
  * Float lex transforms ported from kaebase v2:
  * https://github.com/kaepek/kaebase/blob/FEAT/scaling/v2/crates/common/src/encoding/float.rs
  *
- * Composite key encoding (null-byte escaping, terminators) ported from:
+ * Composite key encoding (null-byte escaping, terminators) and descending
+ * components (types.rs Direction, the 0xFF 0xFF descending terminator) ported
+ * from:
  * https://github.com/kaepek/kaebase/blob/FEAT/scaling/v2/crates/common/src/encoding/cluster_key.rs
+ * https://github.com/kaepek/kaebase/blob/FEAT/scaling/v2/crates/common/src/encoding/types.rs
+ *
+ * A component of a reversed (DESC) type is encoded ascending and then
+ * bitwise complemented, terminator included.
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -17,6 +23,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <optional>
 #include <vector>
 #include "types/types.hh"
 
@@ -38,6 +45,11 @@ std::vector<uint8_t> encode_partition_key(
 bytes encode_serialized_partition_key(
     const std::vector<bytes>& components,
     const std::vector<data_type>& types);
+
+// The smallest byte string greater than every string that starts with p:
+// trailing 0xFF bytes dropped, then the last byte incremented. nullopt when p
+// is all 0xFF, as there is no such string.
+std::optional<bytes> prefix_successor(bytes p);
 
 } // namespace ordered_encoding
 } // namespace dht

@@ -554,11 +554,15 @@ private:
                 return make_ready_future<std::unique_ptr<statements::prepared_statement>>(std::move(prepared));
             }).then([&key, &id_getter, &client_state] (auto prep_ptr) {
                 const auto& warnings = prep_ptr->warnings;
+                auto routing_plan = prep_ptr->lexis_routing_plan;
                 const auto msg =
                         ::make_shared<ResultMsgType>(id_getter(key), std::move(prep_ptr),
                             client_state.is_protocol_extension_set(cql_transport::cql_protocol_extension::LWT_ADD_METADATA_MARK));
                 for (const auto& w : warnings) {
                     msg->add_warning(w);
+                }
+                if (routing_plan && client_state.is_protocol_extension_set(cql_transport::cql_protocol_extension::PREFIX_ROUTING_V1)) {
+                    msg->add_custom_payload("lexis-prefix-routing-v1", std::move(*routing_plan));
                 }
                 return make_ready_future<::shared_ptr<cql_transport::messages::result_message::prepared>>(std::move(msg));
             }).handle_exception_type([&query_string] (typename prepared_statements_cache::statement_is_too_big&) {

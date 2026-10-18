@@ -7,15 +7,23 @@
  * Float lex transforms ported from kaebase v2:
  * https://github.com/kaepek/kaebase/blob/FEAT/scaling/v2/crates/common/src/encoding/float.rs
  *
- * Composite key encoding (null-byte escaping, terminators) ported from:
+ * Composite key encoding (null-byte escaping, terminators) and descending
+ * components (types.rs Direction, the 0xFF 0xFF descending terminator) ported
+ * from:
  * https://github.com/kaepek/kaebase/blob/FEAT/scaling/v2/crates/common/src/encoding/cluster_key.rs
+ * https://github.com/kaepek/kaebase/blob/FEAT/scaling/v2/crates/common/src/encoding/types.rs
+ *
+ * A component of a reversed (DESC) type is encoded ascending and then
+ * bitwise complemented, terminator included.
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
 #include "dht/ordered_encoding.hh"
 #include "utils/big_decimal.hh"
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 namespace dht {
@@ -102,6 +110,16 @@ static inline void escape_byte(std::vector<uint8_t>& buf, uint8_t byte) {
 static inline void terminate(std::vector<uint8_t>& buf) {
     buf.push_back(0x00);
     buf.push_back(0x00);
+}
+
+// A descending component is the bitwise complement of its whole ascending
+// encoding, escapes and terminator included (00 01 becomes FF FE, the 00 00
+// terminator FF FF). Encoded components are prefix-free, so complementing
+// reverses their order, including against values they are a prefix of.
+static inline void complement_from(std::vector<uint8_t>& buf, size_t mark) {
+    for (size_t i = mark; i < buf.size(); ++i) {
+        buf[i] = ~buf[i];
+    }
 }
 
 static inline void emit_be64(std::vector<uint8_t>& buf, uint64_t val) {
@@ -200,8 +218,60 @@ static void encode_decimal(std::vector<uint8_t>& buf, const big_decimal& d) {
 }
 
 // ============================================================================
-// Per-type encoding into output buffer.
-// Partition key columns are always ASC.
+// uuid and timeuuid: the 16 serialized bytes, reordered so that byte order is
+// the CQL comparator's order (types/types.cc compare_visitor).
+//
+//   timeuuid: time_hi (version masked), time_mid, time_low, then the clock
+//             sequence and node bytes each XOR 0x80 (Cassandra compares them
+//             as signed bytes), then the version nibble.
+//   uuid:     the version nibble, then for version 1 the time fields as for
+//             timeuuid and the clock sequence and node bytes unsigned; for
+//             other versions all 16 bytes in order.
+// ============================================================================
+
+static void emit_time_fields(std::vector<uint8_t>& buf, const bytes& raw) {
+    escape_byte(buf, uint8_t(raw[6]) & 0x0f);
+    for (int i : {7, 4, 5, 0, 1, 2, 3}) {
+        escape_byte(buf, uint8_t(raw[i]));
+    }
+}
+
+static void encode_timeuuid(std::vector<uint8_t>& buf, const bytes& raw) {
+    emit_time_fields(buf, raw);
+    for (int i = 8; i < 16; ++i) {
+        escape_byte(buf, uint8_t(raw[i]) ^ 0x80);
+    }
+    escape_byte(buf, uint8_t(raw[6]) >> 4);
+}
+
+static void encode_uuid(std::vector<uint8_t>& buf, const bytes& raw) {
+    uint8_t version = uint8_t(raw[6]) >> 4;
+    escape_byte(buf, version);
+    if (version == 1) {
+        emit_time_fields(buf, raw);
+        for (int i = 8; i < 16; ++i) {
+            escape_byte(buf, uint8_t(raw[i]));
+        }
+    } else {
+        for (int i = 0; i < 16; ++i) {
+            escape_byte(buf, uint8_t(raw[i]));
+        }
+    }
+}
+
+// CQL compares floats as Java does: -0.0 < 0.0, and every NaN equals every
+// other NaN and is greater than everything else. Encoding all NaNs as the
+// canonical positive quiet NaN gives exactly that.
+static uint64_t double_to_lex(double v) {
+    if (std::isnan(v)) {
+        v = std::numeric_limits<double>::quiet_NaN();
+    }
+    return float64_to_lex_u64(v);
+}
+
+// ============================================================================
+// Per-type encoding into output buffer, ascending. A descending (reversed)
+// column is encoded ascending and then complemented by the caller.
 // ============================================================================
 
 static void encode_type_into(std::vector<uint8_t>& buf, const data_value& value, const data_type& type) {
@@ -212,12 +282,25 @@ static void encode_type_into(std::vector<uint8_t>& buf, const data_value& value,
     case abstract_type::kind::ascii:
     case abstract_type::kind::duration:
     case abstract_type::kind::bytes:
-    case abstract_type::kind::uuid:
-    case abstract_type::kind::timeuuid:
     case abstract_type::kind::inet: {
         bytes raw = value.serialize_nonnull();
         for (size_t i = 0; i < raw.size(); ++i) {
             escape_byte(buf, static_cast<uint8_t>(raw[i]));
+        }
+        break;
+    }
+
+    case abstract_type::kind::uuid:
+    case abstract_type::kind::timeuuid: {
+        bytes raw = value.serialize_nonnull();
+        if (raw.size() != 16) {
+            for (size_t i = 0; i < raw.size(); ++i) {
+                escape_byte(buf, static_cast<uint8_t>(raw[i]));
+            }
+        } else if (kind == abstract_type::kind::timeuuid) {
+            encode_timeuuid(buf, raw);
+        } else {
+            encode_uuid(buf, raw);
         }
         break;
     }
@@ -273,13 +356,13 @@ static void encode_type_into(std::vector<uint8_t>& buf, const data_value& value,
 
     case abstract_type::kind::double_kind: {
         double v = value_cast<double>(value);
-        emit_be64(buf, float64_to_lex_u64(v));
+        emit_be64(buf, double_to_lex(v));
         break;
     }
 
     case abstract_type::kind::float_kind: {
         float v = value_cast<float>(value);
-        emit_be64(buf, float64_to_lex_u64(static_cast<double>(v)));
+        emit_be64(buf, double_to_lex(static_cast<double>(v)));
         break;
     }
 
@@ -323,10 +406,37 @@ std::vector<uint8_t> encode_partition_key(
     std::vector<uint8_t> buf;
 
     for (size_t i = 0; i < values.size(); ++i) {
-        encode_type_into(buf, values[i], types[i]);
+        auto mark = buf.size();
+        const auto& type = types[i]->is_reversed() ? types[i]->underlying_type() : types[i];
+        encode_type_into(buf, values[i], type);
+        if (types[i]->is_reversed()) {
+            complement_from(buf, mark);
+        }
     }
 
     return buf;
+}
+
+// Encodes one serialized component, ascending, terminator included.
+static void encode_component(std::vector<uint8_t>& buf, const bytes& component, const data_type& type) {
+    if (component.empty()) {
+        terminate(buf);
+        return;
+    }
+    // The token of stored data must always be computable. A value that does
+    // not deserialize as its type (CQL validates input, but keys built
+    // internally or read from old data may not) falls back to its raw
+    // bytes: still deterministic, just not in the type's order.
+    auto mark = buf.size();
+    try {
+        encode_type_into(buf, type->deserialize_value(component), type);
+    } catch (const marshal_exception&) {
+        buf.resize(mark);
+        for (auto b : component) {
+            escape_byte(buf, static_cast<uint8_t>(b));
+        }
+        terminate(buf);
+    }
 }
 
 bytes encode_serialized_partition_key(
@@ -345,27 +455,29 @@ bytes encode_serialized_partition_key(
             terminate(buf);
             continue;
         }
-        if (components[i].empty()) {
-            terminate(buf);
-            continue;
-        }
-        // The token of stored data must always be computable. A value that does
-        // not deserialize as its type (CQL validates input, but keys built
-        // internally or read from old data may not) falls back to its raw
-        // bytes: still deterministic, just not in the type's order.
         auto mark = buf.size();
-        try {
-            encode_type_into(buf, types[i]->deserialize_value(components[i]), types[i]);
-        } catch (const marshal_exception&) {
-            buf.resize(mark);
-            for (auto b : components[i]) {
-                escape_byte(buf, static_cast<uint8_t>(b));
-            }
-            terminate(buf);
+        if (types[i]->is_reversed()) {
+            encode_component(buf, components[i], types[i]->underlying_type());
+            complement_from(buf, mark);
+        } else {
+            encode_component(buf, components[i], types[i]);
         }
     }
 
     return bytes(reinterpret_cast<const int8_t*>(buf.data()), buf.size());
+}
+
+std::optional<bytes> prefix_successor(bytes p) {
+    size_t n = p.size();
+    while (n > 0 && uint8_t(p[n - 1]) == 0xff) {
+        --n;
+    }
+    if (n == 0) {
+        return std::nullopt;
+    }
+    p.resize(n);
+    p[n - 1] = int8_t(uint8_t(p[n - 1]) + 1);
+    return p;
 }
 
 } // namespace ordered_encoding

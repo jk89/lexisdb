@@ -30,6 +30,8 @@
 #include "dht/i_partitioner.hh"
 #include "dht/ordered_encoding.hh"
 #include "dht/ordered_partitioner.hh"
+#include "types/list.hh"
+#include "types/tuple.hh"
 
 namespace {
 struct maybe_column_definition {
@@ -1131,22 +1133,14 @@ static bool ordered_encoding_preserves_order(const abstract_type& t) {
     case abstract_type::kind::time:
     case abstract_type::kind::varint:
     case abstract_type::kind::decimal:
-        return true;
-    default:
-        return false;
-    }
-}
-
-// Types whose encoding gives equal CQL values equal bytes, so EQ/IN on the
-// column fixes a token prefix. Floats are excluded: -0.0 and 0.0 are equal in
-// CQL but encode differently.
-static bool ordered_encoding_preserves_equality(const abstract_type& t) {
-    switch (t.without_reversed().get_kind()) {
+    case abstract_type::kind::uuid:
+    case abstract_type::kind::timeuuid:
+    case abstract_type::kind::inet:
     case abstract_type::kind::float_kind:
     case abstract_type::kind::double_kind:
-        return false;
-    default:
         return true;
+    default:
+        return false;
     }
 }
 
@@ -1175,7 +1169,7 @@ void statement_restrictions::compute_pk_ordered_prefix() {
         if (it == _single_column_partition_key_restrictions.end()) {
             break;
         }
-        if (only_ops(it->second, {oper_t::EQ, oper_t::IN}) && ordered_encoding_preserves_equality(*cdef.type)) {
+        if (only_ops(it->second, {oper_t::EQ, oper_t::IN})) {
             _pk_ordered_prefix.push_back(&cdef);
             ++used;
             continue;
@@ -1191,14 +1185,6 @@ void statement_restrictions::compute_pk_ordered_prefix() {
         return;
     }
     _pk_ordered_covers_all = used == _single_column_partition_key_restrictions.size();
-}
-
-// Every key whose token starts with prefix p sorts before p with its last byte
-// incremented. Encoded components end with the 0x00 0x00 terminator, so the
-// last byte is 0x00 and there is no carry.
-static bytes after_prefix(bytes p) {
-    p[p.size() - 1] = int8_t(uint8_t(p[p.size() - 1]) + 1);
-    return p;
 }
 
 dht::partition_range_vector statement_restrictions::get_pk_ordered_prefix_ranges(const query_options& options) const {
@@ -1266,20 +1252,34 @@ dht::partition_range_vector statement_restrictions::get_pk_ordered_prefix_ranges
             p = encode(components, types);
         }
         std::optional<bytes> lo = p;
-        std::optional<bytes> hi = p ? std::optional<bytes>(after_prefix(*p)) : std::nullopt;
+        std::optional<bytes> hi = p ? dht::ordered_encoding::prefix_successor(*p) : std::nullopt;
         if (slice) {
             auto with_value = [&] (const managed_bytes& v) {
                 auto c = components;
                 c.push_back(to_bytes(v));
                 return encode(std::move(c), slice_types);
             };
-            if (slice->start()) {
-                auto e = with_value(slice->start()->value());
-                lo = slice->start()->is_inclusive() ? std::move(e) : after_prefix(std::move(e));
+            // The interval is in the column's CQL order. A descending column
+            // encodes in the opposite order, so its CQL end is the low byte
+            // bound and its CQL start the high one, each keeping its
+            // inclusivity (kaebase operators.rs invert_operator:
+            // https://github.com/kaepek/kaebase/blob/FEAT/scaling/v2/crates/common/src/encoding/operators.rs).
+            bool reversed = _pk_ordered_slice->type->is_reversed();
+            const auto& low = reversed ? slice->end() : slice->start();
+            const auto& high = reversed ? slice->start() : slice->end();
+            if (low) {
+                auto e = with_value(low->value());
+                if (low->is_inclusive()) {
+                    lo = std::move(e);
+                } else if (auto s = dht::ordered_encoding::prefix_successor(std::move(e))) {
+                    lo = std::move(*s);
+                } else {
+                    continue;
+                }
             }
-            if (slice->end()) {
-                auto e = with_value(slice->end()->value());
-                hi = slice->end()->is_inclusive() ? after_prefix(std::move(e)) : std::move(e);
+            if (high) {
+                auto e = with_value(high->value());
+                hi = high->is_inclusive() ? dht::ordered_encoding::prefix_successor(std::move(e)) : std::optional<bytes>(std::move(e));
             }
         }
         add_range(std::move(lo), std::move(hi));
@@ -1288,6 +1288,165 @@ dht::partition_range_vector statement_restrictions::get_pk_ordered_prefix_ranges
         return a.start()->value().token() < b.start()->value().token();
     });
     return ranges;
+}
+
+// The routing plan is a list<tuple<text, boolean, tinyint, list<tuple<int,
+// blob, tinyint>>>>: per partition key column of the prefix, then the slice
+// column, its CQL type name, whether it is DESC, the operation, and its values.
+// A value is a bind marker index, or -1 and a literal. Operations:
+//
+//   0 EQ        one value
+//   1 IN        one value per element of the IN list
+//   2 IN_LIST   one value: the whole serialized list (IN ? or a literal list)
+//   3 SLICE     the bounds; flags bit 0: upper bound, bit 1: inclusive
+//   4 TOKEN     token() bounds, flagged like SLICE; the only entry
+//
+// A driver computes the start of every range exactly as
+// get_pk_ordered_prefix_ranges() does, and routes to the smallest.
+namespace {
+
+enum class routing_op : int8_t { eq = 0, in = 1, in_list = 2, slice = 3, token = 4 };
+constexpr int8_t routing_upper = 1;
+constexpr int8_t routing_inclusive = 2;
+
+data_type routing_value_type() {
+    static thread_local auto t = tuple_type_impl::get_instance({int32_type, bytes_type, byte_type});
+    return t;
+}
+
+data_type routing_entry_type() {
+    static thread_local auto t = tuple_type_impl::get_instance({utf8_type, boolean_type, byte_type,
+            list_type_impl::get_instance(routing_value_type(), false)});
+    return t;
+}
+
+// A bind marker or a non-null literal.
+std::optional<data_value> routing_value(const expr::expression& e, int8_t flags) {
+    if (auto* bv = expr::as_if<expr::bind_variable>(&e)) {
+        return make_tuple_value(routing_value_type(), {data_value(int32_t(bv->bind_index)), data_value(bytes()), data_value(flags)});
+    }
+    if (auto* c = expr::as_if<expr::constant>(&e)) {
+        if (c->is_null()) {
+            return std::nullopt;
+        }
+        return make_tuple_value(routing_value_type(), {data_value(int32_t(-1)), data_value(cql3::raw_value(c->value).to_bytes()), data_value(flags)});
+    }
+    return std::nullopt;
+}
+
+std::vector<const expr::binary_operator*> binops_of(const expr::expression& e) {
+    std::vector<const expr::binary_operator*> r;
+    expr::for_each_expression<expr::binary_operator>(e, [&] (const expr::binary_operator& b) { r.push_back(&b); });
+    return r;
+}
+
+// Slice bounds (at most one lower and one upper), flagged as above.
+std::optional<std::vector<data_value>> routing_bounds(const std::vector<const expr::binary_operator*>& binops) {
+    using expr::oper_t;
+    std::vector<data_value> values;
+    bool lower = false, upper = false;
+    for (auto* b : binops) {
+        int8_t flags;
+        switch (b->op) {
+        case oper_t::GT: flags = 0; break;
+        case oper_t::GTE: flags = routing_inclusive; break;
+        case oper_t::LT: flags = routing_upper; break;
+        case oper_t::LTE: flags = routing_upper | routing_inclusive; break;
+        default: return std::nullopt;
+        }
+        bool& seen = (flags & routing_upper) ? upper : lower;
+        if (seen) {
+            return std::nullopt;
+        }
+        seen = true;
+        auto v = routing_value(b->rhs, flags);
+        if (!v) {
+            return std::nullopt;
+        }
+        values.push_back(std::move(*v));
+    }
+    return values;
+}
+
+} // anonymous namespace
+
+std::optional<bytes> statement_restrictions::lexis_routing_plan() const {
+    using expr::oper_t;
+    if (_uses_secondary_indexing || _schema->get_partitioner().name() != dht::ordered_partitioner::classname) {
+        return std::nullopt;
+    }
+    std::vector<data_value> entries;
+    auto add_entry = [&] (sstring type_name, bool desc, routing_op op, std::vector<data_value> values) {
+        entries.push_back(make_tuple_value(routing_entry_type(), {data_value(std::move(type_name)), data_value(desc), data_value(int8_t(op)),
+                make_list_value(list_type_impl::get_instance(routing_value_type(), false), std::move(values))}));
+    };
+    if (has_token_restrictions()) {
+        if (_partition_range_restrictions.size() != 1) {
+            return std::nullopt;
+        }
+        auto binops = binops_of(_partition_range_restrictions[0]);
+        if (binops.size() == 1 && binops[0]->op == oper_t::EQ) {
+            // token(...) = v starts at v.
+            auto v = routing_value(binops[0]->rhs, routing_inclusive);
+            if (!v) {
+                return std::nullopt;
+            }
+            add_entry("blob", false, routing_op::token, {std::move(*v)});
+        } else {
+            auto bounds = routing_bounds(binops);
+            if (!bounds) {
+                return std::nullopt;
+            }
+            add_entry("blob", false, routing_op::token, std::move(*bounds));
+        }
+    } else {
+        if (_pk_ordered_prefix.empty() && !_pk_ordered_slice) {
+            return std::nullopt;
+        }
+        auto type_name = [] (const column_definition& c) { return c.type->without_reversed().cql3_type_name(); };
+        for (const auto* cdef : _pk_ordered_prefix) {
+            auto binops = binops_of(_single_column_partition_key_restrictions.at(cdef));
+            if (binops.size() != 1) {
+                return std::nullopt;
+            }
+            const auto& b = *binops[0];
+            std::vector<data_value> values;
+            routing_op op;
+            if (b.op == oper_t::EQ) {
+                op = routing_op::eq;
+                auto v = routing_value(b.rhs, 0);
+                if (!v) {
+                    return std::nullopt;
+                }
+                values.push_back(std::move(*v));
+            } else if (auto* list = expr::as_if<expr::collection_constructor>(&b.rhs)) {
+                op = routing_op::in;
+                for (const auto& element : list->elements) {
+                    auto v = routing_value(element, 0);
+                    if (!v) {
+                        return std::nullopt;
+                    }
+                    values.push_back(std::move(*v));
+                }
+            } else {
+                op = routing_op::in_list;
+                auto v = routing_value(b.rhs, 0);
+                if (!v) {
+                    return std::nullopt;
+                }
+                values.push_back(std::move(*v));
+            }
+            add_entry(type_name(*cdef), cdef->type->is_reversed(), op, std::move(values));
+        }
+        if (_pk_ordered_slice) {
+            auto bounds = routing_bounds(binops_of(_single_column_partition_key_restrictions.at(_pk_ordered_slice)));
+            if (!bounds) {
+                return std::nullopt;
+            }
+            add_entry(type_name(*_pk_ordered_slice), _pk_ordered_slice->type->is_reversed(), routing_op::slice, std::move(*bounds));
+        }
+    }
+    return make_list_value(list_type_impl::get_instance(routing_entry_type(), false), std::move(entries)).serialize_nonnull();
 }
 
 dht::partition_range_vector statement_restrictions::get_partition_key_ranges(const query_options& options) const {
@@ -1308,7 +1467,16 @@ dht::partition_range_vector statement_restrictions::get_partition_key_ranges(con
         // Special case to avoid extra allocations required for a Cartesian product.
         return partition_ranges_from_EQs(_partition_range_restrictions, options, *_schema);
     }
-    return partition_ranges_from_singles(_partition_range_restrictions, options, *_schema);
+    auto ranges = partition_ranges_from_singles(_partition_range_restrictions, options, *_schema);
+    // Under ordered partitioning token order is the declared key order, ASC or
+    // DESC per column (PARTITION ORDER BY), so return IN results in it.
+    if (_schema->get_partitioner().name() == dht::ordered_partitioner::classname) {
+        dht::ring_position_less_comparator less(*_schema);
+        std::stable_sort(ranges.begin(), ranges.end(), [&] (const dht::partition_range& a, const dht::partition_range& b) {
+            return less(a.start()->value(), b.start()->value());
+        });
+    }
+    return ranges;
 }
 
 namespace {

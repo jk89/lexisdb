@@ -865,11 +865,17 @@ cfamProperty[cql3::statements::cf_properties& expr]
     : property[*$expr.properties()]
     | K_COMPACT K_STORAGE { $expr.set_compact_storage(); }
     | K_CLUSTERING K_ORDER K_BY '(' cfamOrdering[expr] (',' cfamOrdering[expr])* ')'
+    | K_PARTITION K_ORDER K_BY '(' cfamPartitionOrdering[expr] (',' cfamPartitionOrdering[expr])* ')'
     ;
 
 cfamOrdering[cql3::statements::cf_properties& expr]
     @init{ bool reversed=false; }
     : k=ident (K_ASC | K_DESC { reversed=true;} ) { $expr.set_ordering(k, reversed); }
+    ;
+
+cfamPartitionOrdering[cql3::statements::cf_properties& expr]
+    @init{ bool reversed=false; }
+    : k=ident (K_ASC | K_DESC { reversed=true;} ) { $expr.set_partition_ordering(k, reversed); }
     ;
 
 

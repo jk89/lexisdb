@@ -1139,3 +1139,27 @@ SEASTAR_TEST_CASE(test_schema_get_reversed) {
         return make_ready_future<>();
     });
 }
+
+// Lexis: PARTITION ORDER BY survives a schema reload. The schema is written
+// to system_schema and read back as on restart: the DESC partition key column
+// stays reversed, so its tokens are unchanged.
+SEASTAR_TEST_CASE(test_partition_order_survives_schema_reload) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE ks.po (a text, b int, c int, v int, PRIMARY KEY ((a, b), c)) "
+                      "WITH PARTITION ORDER BY (b DESC) AND CLUSTERING ORDER BY (c DESC)").get();
+        auto s = e.local_db().find_schema("ks", "po");
+        BOOST_REQUIRE(!s->partition_key_columns()[0].type->is_reversed());
+        BOOST_REQUIRE(s->partition_key_columns()[1].type->is_reversed());
+        auto reloaded = db::schema_tables::create_table_from_mutations(db::schema_ctxt(e.local_db()),
+                db::schema_tables::make_schema_mutations(s, api::new_timestamp(), true));
+        BOOST_REQUIRE(!reloaded->partition_key_columns()[0].type->is_reversed());
+        BOOST_REQUIRE(reloaded->partition_key_columns()[1].type->is_reversed());
+        BOOST_REQUIRE(reloaded->clustering_key_columns()[0].type->is_reversed());
+        auto key = partition_key::from_exploded(*s, {utf8_type->decompose(sstring("x")), int32_type->decompose(int32_t(5))});
+        BOOST_REQUIRE_EQUAL(dht::get_token(*s, key), dht::get_token(*reloaded, key));
+        // A table without PARTITION ORDER BY persists its partition key as before.
+        e.execute_cql("CREATE TABLE ks.po_asc (k int PRIMARY KEY, v int)").get();
+        auto rows = e.execute_cql("SELECT clustering_order FROM system_schema.columns WHERE keyspace_name = 'ks' AND table_name = 'po_asc' AND column_name = 'k'").get();
+        assert_that(rows).is_rows().with_rows({{utf8_type->decompose(sstring("NONE"))}});
+    });
+}

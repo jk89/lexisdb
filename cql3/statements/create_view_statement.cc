@@ -324,10 +324,17 @@ std::pair<view_ptr, cql3::cql_warnings_vec> create_view_statement::prepare_view(
         warnings.emplace_back(std::move(warning_text));
     }
 
+    _properties.validate_partition_ordering([&] (const column_identifier& id) {
+        return std::ranges::any_of(target_partition_keys, [&] (const column_definition* def) { return *def->column_specification->name == id; });
+    });
+
     schema_builder builder{keyspace(), column_family()};
     auto add_columns = [this, &builder] (std::vector<const column_definition*>& defs, column_kind kind) mutable {
         for (auto* def : defs) {
-            auto&& type = _properties.get_reversable_type(*def->column_specification->name, def->type);
+            auto&& name = *def->column_specification->name;
+            auto&& type = kind == column_kind::partition_key
+                    ? _properties.get_partition_key_type(name, def->type)
+                    : _properties.get_reversable_type(name, def->type);
             builder.with_column(def->name(), type, kind);
         }
     };

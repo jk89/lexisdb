@@ -436,6 +436,14 @@ select_statement::do_execute(query_processor& qp,
 
             auto erm = table.get_effective_replication_map();
             tablet_info = erm->check_locality(token);
+        } else if (!key_ranges.empty()) {
+            // Lexis: a prefix or range read is routed by the token its first
+            // range starts at, so tell the driver which tablet holds it.
+            const auto& start = key_ranges.front().start();
+            token = start ? start->value().token() : dht::minimum_token();
+
+            auto erm = table.get_effective_replication_map();
+            tablet_info = erm->check_locality(token);
         }
     }
 
@@ -2157,9 +2165,25 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
                 std::move(prepared_attrs));
     }
 
-    auto partition_key_bind_indices = ctx.get_partition_key_bind_indexes(*schema);
-    stmt->_may_use_token_aware_routing = partition_key_bind_indices.size() != 0;
-    return make_unique<prepared_statement>(std::move(stmt), ctx, std::move(partition_key_bind_indices), std::move(warnings));
+    // Partition key bind indexes tell drivers to route by the token of the
+    // bound values as a complete key, so they are only given when every
+    // partition key column is bound by `=`. A slice bound or an IN element is
+    // not a key: routing by it would send the read to an arbitrary node.
+    // Lexis prefix and range reads are routed by the routing plan instead.
+    const auto& restrictions_ = *stmt->get_restrictions();
+    std::vector<uint16_t> partition_key_bind_indices;
+    if (restrictions_.partition_key_restrictions_is_all_eq() && !restrictions_.has_token_restrictions()) {
+        partition_key_bind_indices = ctx.get_partition_key_bind_indexes(*schema);
+    }
+    auto routing_plan = restrictions_.lexis_routing_plan();
+    // As for partition key indexes, only statements with bind markers: an
+    // unprepared statement with literal values cannot be routed by a driver,
+    // so tablet info sent with its results would be wasted.
+    stmt->_may_use_token_aware_routing = partition_key_bind_indices.size() != 0
+            || (routing_plan.has_value() && ctx.bound_variables_size() != 0);
+    auto prepared = make_unique<prepared_statement>(std::move(stmt), ctx, std::move(partition_key_bind_indices), std::move(warnings));
+    prepared->lexis_routing_plan = std::move(routing_plan);
+    return prepared;
 }
 
 ::shared_ptr<restrictions::statement_restrictions>

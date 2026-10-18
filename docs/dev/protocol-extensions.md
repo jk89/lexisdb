@@ -234,3 +234,58 @@ Having a designated flag gives the ability to skip tablet metadata generation
 The feature is identified by the `LEXIS_TABLETS_ROUTING_V1` key, which is meant to be sent
 in the SUPPORTED message. (Upstream uses `TABLETS_ROUTING_V1`; Lexis does not advertise
 it, so drivers that only parse `LongType` tokens never receive Lexis tablet payloads.)
+
+## Lexis: routing partition key prefix and range reads
+
+Under ordered partitioning a read restricted by a partition key prefix
+(`WHERE tenant = ?`), a range on the next partition key column
+(`WHERE tenant = ? AND user > ?`) or a `token()` range reads one contiguous
+token range per prefix value. A driver can route such a read to the replica
+and shard that hold the start of the range, as it routes a complete-key read
+by its token.
+
+Standard prepared metadata cannot describe this: its partition key indexes
+mean "these bound values form the complete key". Lexis therefore only sends
+partition key indexes when every partition key column is bound by `=`, and
+describes every routable read with a routing plan instead.
+
+The feature is identified by the `LEXIS_PREFIX_ROUTING_V1` key, sent in the
+SUPPORTED message. When the driver sends it in STARTUP, the PREPARED response
+of a routable SELECT carries `lexis-prefix-routing-v1` in its `custom_payload`,
+a value of type
+
+    list<tuple<text, boolean, tinyint, list<tuple<int, blob, tinyint>>>>
+
+with one entry per partition key column of the prefix, in partition key order,
+then one for the range column if there is one. An entry holds the column's CQL
+type name, whether it is DESC (`PARTITION ORDER BY`), an operation, and its
+values. A value is a bind marker index and an empty blob, or `-1` and a
+serialized literal, and flags. The operations are:
+
+- `0` EQ: one value.
+- `1` IN: one value per element of the IN list.
+- `2` IN_LIST: one value holding the whole serialized list (`IN ?`, or a
+  literal list).
+- `3` SLICE: the bounds of the range column, at most one lower and one upper.
+  Flags bit 0 marks the upper bound, bit 1 an inclusive one.
+- `4` TOKEN: `token()` bounds, flagged as for SLICE. It is the only entry. A
+  `token() = v` restriction is an inclusive lower bound.
+
+For every combination of prefix values (the Cartesian product of the EQ and
+IN entries), the driver computes the range start as the server does:
+
+- `p` is the ordered encoding of the prefix values, each DESC component
+  complemented.
+- Without a SLICE entry the range is `[p, successor(p))`, where `successor`
+  drops trailing `0xff` bytes and increments the last byte.
+- With one, the CQL lower bound gives the low end of the range, or the upper
+  bound if the column is DESC: `encode(prefix + value)` when inclusive,
+  `successor(encode(prefix + value))` when not.
+
+The read starts at the smallest start; the driver routes by it, to the tablet
+holding that token. A TOKEN entry starts at its lower bound (when exclusive,
+just after it), or at the minimum token without one.
+
+The coordinator of a range read also sends `lexis-tablets-routing-v1` (see
+above) for the tablet that holds the start of its first range when that
+tablet's replicas do not include it, so the driver learns where prefixes live.

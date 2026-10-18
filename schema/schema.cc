@@ -949,6 +949,19 @@ std::ostream& schema::describe(replica::database& db, std::ostream& os, bool wit
         }
         os << ")\n    AND ";
     }
+    // Lexis: shown only when a partition key column is DESC, so tables that
+    // declare no PARTITION ORDER BY describe as before.
+    if (std::ranges::any_of(partition_key_columns(), [] (const column_definition& c) { return c.type->is_reversed(); })) {
+        os << "PARTITION ORDER BY (";
+        n = 0;
+        for (auto& pk : partition_key_columns()) {
+            if (n++ != 0) {
+                os << ", ";
+            }
+            os << pk.name_as_cql_string() << (pk.type->is_reversed() ? " DESC" : " ASC");
+        }
+        os << ")\n    AND ";
+    }
     if (is_compact_table()) {
         os << "COMPACT STORAGE\n    AND ";
     }

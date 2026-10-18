@@ -242,10 +242,13 @@ std::unique_ptr<prepared_statement> create_table_statement::raw_statement::prepa
     stmt->_use_compact_storage = _properties.use_compact_storage();
 
     auto& key_aliases = _key_aliases[0];
+    _properties.validate_partition_ordering([&] (const column_identifier& id) {
+        return std::ranges::any_of(key_aliases, [&] (auto& alias) { return *alias == id; });
+    });
     std::vector<data_type> key_types;
     for (auto&& alias : key_aliases) {
         stmt->_key_aliases.emplace_back(alias->name());
-        auto t = get_type_and_remove(stmt->_columns, alias);
+        auto t = _properties.get_partition_key_type(*alias, get_type_and_remove(stmt->_columns, alias));
         if (t->is_counter()) {
             throw exceptions::invalid_request_exception(format("counter type is not supported for PRIMARY KEY part {}", alias->text()));
         }

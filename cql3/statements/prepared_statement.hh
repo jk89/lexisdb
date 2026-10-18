@@ -40,6 +40,10 @@ public:
     const std::vector<seastar::lw_shared_ptr<column_specification>> bound_names;
     const std::vector<uint16_t> partition_key_bind_indices;
     const std::vector<sstring> warnings;
+    // Lexis: the lexis-prefix-routing-v1 plan sent in PREPARED responses to
+    // clients that negotiated LEXIS_PREFIX_ROUTING_V1, see
+    // statement_restrictions::lexis_routing_plan().
+    std::optional<bytes> lexis_routing_plan;
 
     prepared_statement(seastar::shared_ptr<cql_statement> statement_, std::vector<seastar::lw_shared_ptr<column_specification>> bound_names_,
                        std::vector<uint16_t> partition_key_bind_indices, std::vector<sstring> warnings = {});

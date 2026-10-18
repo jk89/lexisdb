@@ -20,7 +20,11 @@ static const std::map<cql_protocol_extension, seastar::sstring> EXTENSION_NAMES 
     {cql_protocol_extension::RATE_LIMIT_ERROR, "SCYLLA_RATE_LIMIT_ERROR"},
     // Lexis sends ordered (blob) tokens, so it advertises its own key: drivers
     // that only understand upstream's bigint tokens do not negotiate it.
-    {cql_protocol_extension::TABLETS_ROUTING_V1, "LEXIS_TABLETS_ROUTING_V1"}
+    {cql_protocol_extension::TABLETS_ROUTING_V1, "LEXIS_TABLETS_ROUTING_V1"},
+    // Lexis: PREPARED responses carry a routing plan (lexis-prefix-routing-v1)
+    // from which drivers compute the token a partition key prefix or range
+    // read starts at.
+    {cql_protocol_extension::PREFIX_ROUTING_V1, "LEXIS_PREFIX_ROUTING_V1"}
 };
 
 cql_protocol_extension_enum_set supported_cql_protocol_extensions() {

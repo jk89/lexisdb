@@ -193,6 +193,13 @@ public:
 
     bool has_token_restrictions() const;
 
+    // Lexis prefix routing (LEXIS_PREFIX_ROUTING_V1): how a driver computes,
+    // from the bound values, the token this statement's partition ranges start
+    // at, serialized for the lexis-prefix-routing-v1 PREPARED payload. nullopt
+    // when the partition key restrictions are not a token range read this
+    // describes (secondary index reads, function calls in the values, ...).
+    std::optional<bytes> lexis_routing_plan() const;
+
     // Checks whether the given column has an EQ restriction.
     // EQ restriction is `col = ...` or `(col, col2) = ...`
     // IN restriction is NOT an EQ restriction, this function will not look for IN restrictions.

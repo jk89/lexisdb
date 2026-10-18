@@ -1182,7 +1182,9 @@ static void fill_column_info(const schema& table,
     auto type = column.type;
     if (type->is_reversed()) {
         type = type->underlying_type();
-        if (column.is_clustering_key()) {
+        // A reversed partition key column is DESC in PARTITION ORDER BY.
+        // Ascending ones stay "NONE", as before.
+        if (column.is_clustering_key() || column.is_partition_key()) {
             order = "DESC";
         }
     }
