@@ -29,7 +29,7 @@ using namespace locator;
 
 static thread_local auto replica_type = tuple_type_impl::get_instance({uuid_type, int32_type});
 static thread_local auto replica_set_type = list_type_impl::get_instance(replica_type, false);
-static thread_local auto tablet_info_type = tuple_type_impl::get_instance({long_type, long_type, replica_set_type});
+static thread_local auto tablet_info_type = tuple_type_impl::get_instance({bytes_type, bytes_type, replica_set_type});
 
 data_type get_replica_set_type() {
     return replica_set_type;
@@ -49,12 +49,13 @@ schema_ptr make_tablets_schema() {
             .with_column("tablet_count", int32_type, column_kind::static_column)
             .with_column("keyspace_name", utf8_type, column_kind::static_column)
             .with_column("table_name", utf8_type, column_kind::static_column)
-            .with_column("last_token", long_type, column_kind::clustering_key)
+            .with_column("last_token", bytes_type, column_kind::clustering_key)
             .with_column("replicas", replica_set_type)
             .with_column("new_replicas", replica_set_type)
             .with_column("stage", utf8_type)
             .with_column("transition", utf8_type)
             .with_column("session", uuid_type)
+            .with_column("split_point", bytes_type)
             .with_column("resize_type", utf8_type, column_kind::static_column)
             .with_column("resize_seq_number", long_type, column_kind::static_column)
             .with_version(db::system_keyspace::generate_schema_version(id))
@@ -93,8 +94,11 @@ tablet_map_to_mutation(const tablet_map& tablets, table_id id, const sstring& ke
     tablet_id tid = tablets.first_tablet();
     for (auto&& tablet : tablets.tablets()) {
         auto last_token = tablets.get_last_token(tid);
-        auto ck = clustering_key::from_single_value(*s, data_value(dht::token::to_int64(last_token)).serialize_nonnull());
+        auto ck = clustering_key::from_single_value(*s, data_value(last_token.to_tagged_bytes()).serialize_nonnull());
         m.set_clustered_cell(ck, "replicas", make_list_value(replica_set_type, replicas_to_data_value(tablet.replicas)), ts);
+        if (auto* split_point = tablets.get_pinned_split_point(tid)) {
+            m.set_clustered_cell(ck, "split_point", data_value(split_point->to_tagged_bytes()), ts);
+        }
         if (auto tr_info = tablets.get_tablet_transition_info(tid)) {
             m.set_clustered_cell(ck, "stage", tablet_transition_stage_to_string(tr_info->stage), ts);
             m.set_clustered_cell(ck, "transition", tablet_transition_kind_to_string(tr_info->transition), ts);
@@ -161,6 +165,12 @@ tablet_mutation_builder::del_transition(dht::token last_token) {
 }
 
 tablet_mutation_builder&
+tablet_mutation_builder::set_split_point(dht::token last_token, const dht::token& split_point) {
+    _m.set_clustered_cell(get_ck(last_token), "split_point", data_value(split_point.to_tagged_bytes()), _ts);
+    return *this;
+}
+
+tablet_mutation_builder&
 tablet_mutation_builder::set_resize_decision(locator::resize_decision resize_decision) {
     _m.set_static_cell("resize_type", data_value(resize_decision.type_name()), _ts);
     _m.set_static_cell("resize_seq_number", data_value(int64_t(resize_decision.sequence_number)), _ts);
@@ -216,7 +226,7 @@ static table_id to_tablet_metadata_key(const schema& s, const partition_key& key
 
 static dht::token to_tablet_metadata_row_key(const schema& s, const clustering_key& key) {
     const auto elements = key.explode(s);
-    return dht::token::from_int64(value_cast<int64_t>(long_type->deserialize_value(elements[0])));
+    return dht::token::from_tagged_bytes(elements[0]);
 }
 
 static void do_update_tablet_metadata_change_hint(locator::tablet_metadata_change_hint& hint, const schema& s, const mutation& m) {
@@ -369,12 +379,13 @@ tablet_id process_one_row(table_id table, tablet_map& map, tablet_id tid, const 
 
     map.set_tablet(tid, tablet_info{std::move(tablet_replicas)});
 
-    auto persisted_last_token = dht::token::from_int64(row.get_as<int64_t>("last_token"));
-    auto current_last_token = map.get_last_token(tid);
-    if (current_last_token != persisted_last_token) {
-        tablet_logger.debug("current tablet_map: {}", map);
-        throw std::runtime_error(format("last_token mismatch between on-disk ({}) and in-memory ({}) tablet map for table {} tablet {}",
-                                        persisted_last_token, current_last_token, table, tid));
+    // Tablet boundaries are explicit, so the persisted last token is authoritative.
+    // Rows arrive in clustering (= token) order, which keeps the boundaries sorted.
+    map.set_last_token(tid, dht::token::from_tagged_bytes(row.get_blob("last_token")));
+    if (row.has("split_point")) {
+        map.set_split_point(tid, dht::token::from_tagged_bytes(row.get_blob("split_point")));
+    } else {
+        map.clear_split_point(tid);
     }
 
     return *map.next_tablet(tid);
@@ -500,11 +511,11 @@ do_update_tablet_metadata_partition(cql3::query_processor& qp, tablet_metadata& 
 
 static future<>
 do_update_tablet_metadata_rows(cql3::query_processor& qp, tablet_map& tmap, const tablet_metadata_change_hint::table_hint& hint) {
-    for (const auto token : hint.tokens) {
+    for (const auto& token : hint.tokens) {
         auto res = co_await qp.execute_internal(
                 "select * from system.tablets where table_id = ? and last_token = ?",
                 db::consistency_level::ONE,
-                {data_value(hint.table_id.uuid()), data_value(dht::token::to_int64(token))},
+                {data_value(hint.table_id.uuid()), data_value(token.to_tagged_bytes())},
                 cql3::query_processor::cache_internal::yes);
         const auto tid = tmap.get_tablet_id(token);
         if (res->empty()) {
@@ -561,7 +572,7 @@ class tablet_sstable_set : public sstables::sstable_set_impl {
 public:
     tablet_sstable_set(schema_ptr s, const storage_group_manager& sgm, const locator::tablet_map& tmap)
         : _schema(std::move(s))
-        , _tablet_map(tmap.tablet_count())
+        , _tablet_map(tmap.last_tokens())
     {
         sgm.for_each_storage_group([this] (size_t id, storage_group& sg) {
             auto set = sg.make_sstable_set();
@@ -657,7 +668,7 @@ lw_shared_ptr<sstables::sstable_set> make_tablet_sstable_set(schema_ptr s, const
 
 future<std::optional<tablet_transition_stage>> read_tablet_transition_stage(cql3::query_processor& qp, table_id tid, dht::token last_token) {
     auto rs = co_await qp.execute_internal("select stage from system.tablets where table_id = ? and last_token = ?",
-            {tid.uuid(), dht::token::to_int64(last_token)}, cql3::query_processor::cache_internal::no);
+            {tid.uuid(), data_value(last_token.to_tagged_bytes())}, cql3::query_processor::cache_internal::no);
     if (rs->empty() || !rs->one().has("stage")) {
         co_return std::nullopt;
     }

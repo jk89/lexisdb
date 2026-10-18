@@ -39,7 +39,17 @@ static sstables::shared_sstable generate_sstable(schema_ptr s, std::function<sha
         return m;
     };
 
-    auto keys = tests::generate_partition_keys(100, s);
+    // The tests split on the first bit of the token. Tokens are the ordered
+    // encoding of the key -- for text, the key's bytes -- so random keys need
+    // not land on both sides (random UTF-8 mostly starts with a byte >= 0x80).
+    // Use keys starting with 'a' (0x61) and with U+00E9 (0xc3 0xa9): 50 each.
+    std::vector<dht::decorated_key> keys;
+    for (int i = 0; i < 50; ++i) {
+        for (auto prefix : {"a", "\xc3\xa9"}) {
+            keys.push_back(dht::decorate_key(*s, partition_key::from_single_value(*s, to_bytes(fmt::format("{}{}", prefix, i)))));
+        }
+    }
+    std::sort(keys.begin(), keys.end(), dht::decorated_key::less_comparator(s));
     std::vector<mutation> muts;
 
     muts.reserve(keys.size());

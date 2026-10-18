@@ -119,12 +119,12 @@ inline auto format_as(indexable_element e) {
 
 class summary_entry {
 public:
-    int64_t raw_token;
+    dht::token token;
     bytes_view key;
     uint64_t position;
 
     explicit summary_entry(dht::token token, bytes_view key, uint64_t position)
-            : raw_token(dht::token::to_int64(token))
+            : token(std::move(token))
             , key(key)
             , position(position) {
     }
@@ -133,8 +133,8 @@ public:
         return key_view{key};
     }
 
-    dht::token get_token() const {
-        return dht::token::from_int64(raw_token);
+    const dht::token& get_token() const {
+        return token;
     }
 
     decorated_key_view get_decorated_key() const {

@@ -277,10 +277,11 @@ def testLimitWithDeletedRowsAndStaticColumns(cql, test_keyspace):
                    row(4, -1, 1, 1),
                    row(5, -1, 1, 1))
 
-        # Note that which partitions get returned depend on the token order...
+        # Note that which partitions get returned depend on the token order,
+        # which under ordered partitioning (Lexis) is partition key order.
         assert_rows_ignoring_order(execute(cql, table, "SELECT * FROM %s LIMIT 2"),
                    row(1, -1, 1, 1),
-                   row(5, -1, 1, 1))
+                   row(3, -1, 1, 1))
 
 @pytest.mark.xfail(reason="issue #15099")
 def testFilteringOnClusteringColumnsWithLimitAndStaticColumns(cql, test_keyspace):

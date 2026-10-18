@@ -384,7 +384,7 @@ abstract_replication_strategy::get_pending_address_ranges(const token_metadata_p
     co_return ret;
 }
 
-static const auto default_replication_map_key = dht::token::from_int64(0);
+static const auto default_replication_map_key = dht::token::first();
 
 future<mutable_vnode_effective_replication_map_ptr> calculate_effective_replication_map(replication_strategy_ptr rs, token_metadata_ptr tmptr) {
     replication_map replication_map;

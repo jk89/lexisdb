@@ -383,9 +383,10 @@ schema_ptr system_keyspace::repair_history() {
             // The time is repair start time
             .with_column("repair_time", timestamp_type, column_kind::clustering_key)
             .with_column("repair_uuid", uuid_type, column_kind::clustering_key)
-            // The token range is (range_start, range_end]
-            .with_column("range_start", long_type, column_kind::clustering_key)
-            .with_column("range_end", long_type, column_kind::clustering_key)
+            // The token range is (range_start, range_end], as tagged token bytes
+            // (dht::token::to_tagged_bytes())
+            .with_column("range_start", bytes_type, column_kind::clustering_key)
+            .with_column("range_end", bytes_type, column_kind::clustering_key)
             .with_column("keyspace_name", utf8_type, column_kind::static_column)
             .with_column("table_name", utf8_type, column_kind::static_column)
             .set_comment("Record repair history")
@@ -889,8 +890,8 @@ schema_ptr system_keyspace::v3::commitlog_cleanups() {
         {
             {"position", replay_position_type},
             {"table_uuid", uuid_type},
-            {"start_token_exclusive", long_type},
-            {"end_token_inclusive", long_type},
+            {"start_token_inclusive", bytes_type},
+            {"end_token_exclusive", bytes_type},
         },
         // regular columns
         {},
@@ -1696,7 +1697,12 @@ future<> system_keyspace::drop_truncation_rp_records() {
 
 future<> system_keyspace::save_truncation_record(const replica::column_family& cf, db_clock::time_point truncated_at, db::replay_position rp) {
     sstring req = format("INSERT INTO system.{} (table_uuid, shard, position, segment_id, truncated_at) VALUES(?,?,?,?,?)", TRUNCATED);
-    co_await _qp.execute_internal(req, {cf.schema()->id().uuid(), int32_t(rp.shard_id()), int32_t(rp.pos), int64_t(rp.base_id()), truncated_at}, cql3::query_processor::cache_internal::yes);
+    // Each shard saves its own record. A shard that saw no writes has an empty
+    // replay position, whose shard_id() is 0: saving it under that would
+    // overwrite shard 0's record, and commitlog replay would then resurrect
+    // shard 0's truncated data. Save it under this shard instead.
+    const auto shard = rp == db::replay_position() ? this_shard_id() : rp.shard_id();
+    co_await _qp.execute_internal(req, {cf.schema()->id().uuid(), int32_t(shard), int32_t(rp.pos), int64_t(rp.base_id()), truncated_at}, cql3::query_processor::cache_internal::yes);
     // Flush the table so that the value is available on boot before commitlog replay.
     // Commit log replay depends on truncation records to determine the minimum replay position.
     co_await force_blocking_flush(TRUNCATED);
@@ -1747,42 +1753,41 @@ future<> system_keyspace::drop_old_commitlog_cleanup_records(replay_position min
 }
 
 future<> system_keyspace::save_commitlog_cleanup_record(table_id table, dht::token_range tr, db::replay_position rp) {
-    auto [start_token_exclusive, end_token_inclusive] = canonical_token_range(tr);
+    auto [start_token_inclusive, end_token_exclusive] = canonical_token_range(tr);
     auto pos = make_tuple_value(replay_position_type, tuple_type_impl::native_type({int64_t(rp.base_id()), int32_t(rp.pos)}));
-    sstring req = format("INSERT INTO system.{} (shard, position, table_uuid, start_token_exclusive, end_token_inclusive) VALUES(?,?,?,?,?)", COMMITLOG_CLEANUPS);
-    co_await _qp.execute_internal(req, {int32_t(rp.shard_id()), pos, table.uuid(), start_token_exclusive, end_token_inclusive}, cql3::query_processor::cache_internal::yes);
+    sstring req = format("INSERT INTO system.{} (shard, position, table_uuid, start_token_inclusive, end_token_exclusive) VALUES(?,?,?,?,?)", COMMITLOG_CLEANUPS);
+    co_await _qp.execute_internal(req, {int32_t(rp.shard_id()), pos, table.uuid(),
+            data_value(start_token_inclusive.to_tagged_bytes()), data_value(end_token_exclusive.to_tagged_bytes())},
+            cql3::query_processor::cache_internal::yes);
 }
 
-std::pair<int64_t, int64_t> system_keyspace::canonical_token_range(dht::token_range tr) {
-    // closed_full_range represents a full interval using only regular token values. (No infinities).
-    auto closed_full_range = dht::token_range::make({dht::first_token()}, dht::token::from_int64(std::numeric_limits<int64_t>::max()));
-    // By intersecting with closed_full_range we get rid of all the crazy infinities that can be represented by dht::token_range.
-    auto finite_tr = tr.intersection(closed_full_range, dht::token_comparator());
-    if (!finite_tr) {
-        // If we got here, the interval was degenerate, with only infinities.
-        // So we return an empty (x, x] interval.
-        // We arbitrarily choose `min` as the `x`.
-        //
-        // Note: (x, x] is interpreted by the interval classes from `interval.hh` as the
-        // *full* (wrapping) interval, not an empty interval, so be careful about this if you ever
-        // want to implement a conversion from the output of this function back to `dht::token_range`.
-        // Nota bene, this `interval.hh` convention means that there is no way to represent an empty
-        // interval, so it is objectively bad.
-        //
-        // Note: (x, x] is interpreted by boost::icl as an empty interval, so it doesn't need any special
-        // treatment before use in `boost::icl::interval_map`.
-        return {std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::min()};
+std::pair<dht::token, dht::token> system_keyspace::canonical_token_range(dht::token_range tr) {
+    // Tokens have no predecessor, so the canonical form is right-open [x, y):
+    // an exclusive start s becomes s.next(), an inclusive end e becomes e.next().
+    // minimum_token() / maximum_token() stand for the open ends. No key has
+    // the maximum token, so [x, maximum) still covers every key after x.
+    auto after = [] (const dht::token& t) {
+        switch (t._kind) {
+        case dht::token::kind::before_all_keys: return dht::token(dht::token::kind::key, bytes());
+        case dht::token::kind::key: return t.next();
+        case dht::token::kind::after_all_keys: return dht::maximum_token();
+        }
+        __builtin_unreachable();
+    };
+    dht::token start = !tr.start() ? dht::minimum_token()
+            : tr.start()->is_inclusive() ? tr.start()->value()
+            : after(tr.start()->value());
+    dht::token end = !tr.end() ? dht::maximum_token()
+            : tr.end()->is_inclusive() ? after(tr.end()->value())
+            : tr.end()->value();
+    if (tr.is_singular()) {
+        end = after(tr.start()->value());
     }
-    // After getting rid of possible infinities, we only have to adjust the openness of bounds.
-    int64_t start_token_exclusive = dht::token::to_int64(finite_tr->start().value().value());
-    if (finite_tr->start()->is_inclusive()) {
-        start_token_exclusive -= 1;
+    if (end <= start) {
+        // Empty. [x, x) is empty for boost::icl as well.
+        return {start, start};
     }
-    int64_t end_token_inclusive = dht::token::to_int64(finite_tr->end().value().value());
-    if (!finite_tr->end()->is_inclusive()) {
-        end_token_inclusive -= 1;
-    }
-    return {start_token_exclusive, end_token_inclusive};
+    return {start, end};
 }
 
 size_t system_keyspace::commitlog_cleanup_map_hash::operator()(const std::pair<table_id, int32_t>& p) const {
@@ -1794,13 +1799,13 @@ size_t system_keyspace::commitlog_cleanup_map_hash::operator()(const std::pair<t
 
 struct system_keyspace::commitlog_cleanup_local_map::impl {
     boost::icl::interval_map<
-        int64_t,
+        dht::token,
         db::replay_position,
         boost::icl::partial_absorber,
         std::less,
         boost::icl::inplace_max,
         boost::icl::inter_section,
-        boost::icl::left_open_interval<int64_t>
+        boost::icl::right_open_interval<dht::token>
     > _map;
 };
 
@@ -1809,8 +1814,10 @@ system_keyspace::commitlog_cleanup_local_map::~commitlog_cleanup_local_map() {
 system_keyspace::commitlog_cleanup_local_map::commitlog_cleanup_local_map()
     : _pimpl(std::make_unique<impl>())
 {}
-std::optional<db::replay_position> system_keyspace::commitlog_cleanup_local_map::get(int64_t token) const {
-    if (auto it = _pimpl->_map.find(token); it != _pimpl->_map.end()) {
+std::optional<db::replay_position> system_keyspace::commitlog_cleanup_local_map::get(const dht::token& token) const {
+    // icl only looks up single elements of discrete domains; [token, token.next())
+    // contains exactly this token.
+    if (auto it = _pimpl->_map.find(boost::icl::right_open_interval<dht::token>(token, token.next())); it != _pimpl->_map.end()) {
         return it->second;
     }
     return std::nullopt;
@@ -1823,8 +1830,8 @@ future<system_keyspace::commitlog_cleanup_map> system_keyspace::get_commitlog_cl
     for (const auto& row: *result_set) {
         auto table = table_id(row.get_as<utils::UUID>("table_uuid"));
         auto shard = row.get_as<int32_t>("shard");
-        auto start_token_exclusive = row.get_as<int64_t>("start_token_exclusive");
-        auto end_token_inclusive = row.get_as<int64_t>("end_token_inclusive");
+        auto start_token_inclusive = dht::token::from_tagged_bytes(row.get_blob("start_token_inclusive"));
+        auto end_token_exclusive = dht::token::from_tagged_bytes(row.get_blob("end_token_exclusive"));
         auto pos_tuple = value_cast<tuple_type_impl::native_type>(replay_position_type->deserialize(row.get_view("position")));
         auto rp = db::replay_position(
             shard,
@@ -1832,7 +1839,7 @@ future<system_keyspace::commitlog_cleanup_map> system_keyspace::get_commitlog_cl
             value_cast<int32_t>(pos_tuple[1])
         );
         auto& inner_map = ret.try_emplace(std::make_pair(table, shard)).first->second;
-        inner_map._pimpl->_map += std::make_pair(boost::icl::left_open_interval<int64_t>(start_token_exclusive, end_token_inclusive), rp);
+        inner_map._pimpl->_map += std::make_pair(boost::icl::right_open_interval<dht::token>(start_token_inclusive, end_token_exclusive), rp);
     }
     co_return ret;
 }
@@ -2403,7 +2410,8 @@ future<> system_keyspace::get_compaction_history(compaction_history_consumer con
 
 future<> system_keyspace::update_repair_history(repair_history_entry entry) {
     sstring req = format("INSERT INTO system.{} (table_uuid, repair_time, repair_uuid, keyspace_name, table_name, range_start, range_end) VALUES (?, ?, ?, ?, ?, ?, ?)", REPAIR_HISTORY);
-    co_await execute_cql(req, entry.table_uuid.uuid(), entry.ts, entry.id.uuid(), entry.ks, entry.cf, entry.range_start, entry.range_end).discard_result();
+    co_await execute_cql(req, entry.table_uuid.uuid(), entry.ts, entry.id.uuid(), entry.ks, entry.cf,
+            data_value(entry.range_start.to_tagged_bytes()), data_value(entry.range_end.to_tagged_bytes())).discard_result();
 }
 
 future<> system_keyspace::get_repair_history(::table_id table_id, repair_history_consumer f) {
@@ -2412,8 +2420,8 @@ future<> system_keyspace::get_repair_history(::table_id table_id, repair_history
         repair_history_entry ent;
         ent.id = tasks::task_id(row.get_as<utils::UUID>("repair_uuid"));
         ent.table_uuid = ::table_id(row.get_as<utils::UUID>("table_uuid"));
-        ent.range_start = row.get_as<int64_t>("range_start");
-        ent.range_end = row.get_as<int64_t>("range_end");
+        ent.range_start = dht::token::from_tagged_bytes(row.get_blob("range_start"));
+        ent.range_end = dht::token::from_tagged_bytes(row.get_blob("range_end"));
         ent.ks = row.get_as<sstring>("keyspace_name");
         ent.cf = row.get_as<sstring>("table_name");
         ent.ts = row.get_as<db_clock::time_point>("repair_time");

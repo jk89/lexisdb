@@ -36,7 +36,7 @@ public:
         auto key = partition_key::from_optional_exploded(*_schema, parameters);
         auto tok = dht::get_token(*_schema, key);
         warn(unimplemented::cause::VALIDATION);
-        return tok.data();
+        return to_bytes(tok.data());
     }
 };
 

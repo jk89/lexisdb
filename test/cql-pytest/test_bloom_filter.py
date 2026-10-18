@@ -23,13 +23,20 @@ def test_bloom_filter(scylla_only, cql, test_keyspace, disable_component_memory_
         with new_test_table(cql, test_keyspace, "a int PRIMARY KEY",
             f"WITH bloom_filter_fp_chance = {fp_chance}") as table:
 
+            # Under ordered partitioning (Lexis), a read for a key outside an
+            # sstable's first..last key range skips the sstable without
+            # consulting its bloom filter. So write every stride-th key and
+            # read the missing keys in between, which the filter must reject.
+            stride = M // N + 2
             stmt = cql.prepare(f"INSERT INTO {table} (a) VALUES(?)")
             for k in range(N):
-                cql.execute(stmt, [k])
+                cql.execute(stmt, [k * stride])
             nodetool.flush(cql, table)
 
             read_stmt = cql.prepare(f"SELECT * FROM {table} WHERE a = ? BYPASS CACHE")
-            for k in range(N, N+M):
+            missing = [k for k in range(N * stride) if k % stride][:M]
+            assert len(missing) == M
+            for k in missing:
                 cql.execute(read_stmt, [k])
 
             fp = rest_api.get_column_family_metric(cql,

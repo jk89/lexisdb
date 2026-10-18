@@ -40,9 +40,9 @@ def test_group_by_partition(cql, table1):
 # Reproduces #17237 - more results than the limit were generated.
 def test_group_by_partition_with_limit(cql, table1):
     # "LIMIT 1" should return only one of the two matches (0,0,0,1) and
-    # (1,0,0,5). The partition key 1 happens to be the first one in
-    # murmur3 order, so this is what should be returned.
-    assert {(1,0,0,5)} == set(cql.execute(f'SELECT p,c1,c2,v FROM {table1} GROUP BY p LIMIT 1'))
+    # (1,0,0,5). Partitions are in partition key order (Lexis), so partition
+    # key 0 is the first one, and this is what should be returned.
+    assert {(0,0,0,1)} == set(cql.execute(f'SELECT p,c1,c2,v FROM {table1} GROUP BY p LIMIT 1'))
 
 def test_group_by_partition_count_with_limit(cql, test_keyspace):
     def execute_query(qry):
@@ -65,18 +65,18 @@ def test_group_by_partition_count_with_limit(cql, test_keyspace):
         for i in range(41):
             cql.execute(f"INSERT INTO {table} (a,b,c) VALUES (419,{i+1},419);");
 
-        assert [379, 293, 419, 317] == list(map(lambda x: x[0], execute_query(f'SELECT a FROM {table} GROUP BY a')))
+        assert [293, 317, 379, 419] == list(map(lambda x: x[0], execute_query(f'SELECT a FROM {table} GROUP BY a')))
 
         # Testing up to 5 to ensure that the correct results are returned if fewer
         # results are generated than the LIMIT
         for i in range(1,6):
             query_result = [x[0] for x in execute_query(f'SELECT a FROM {table} GROUP BY a LIMIT {i}')]
-            assert query_result == [379, 293, 419, 317][:i]
+            assert query_result == [293, 317, 379, 419][:i]
 
-        assert [37, 29, 41, 31] == [x[0] for x in execute_query(f'SELECT COUNT(a) FROM {table} GROUP BY a')]
+        assert [29, 31, 37, 41] == [x[0] for x in execute_query(f'SELECT COUNT(a) FROM {table} GROUP BY a')]
 
         for i in range(1,5):
-            assert [37, 29, 41, 31][:i] == [x[0] for x in execute_query(f'SELECT COUNT(a) FROM {table} GROUP BY a LIMIT {i}')]
+            assert [29, 31, 37, 41][:i] == [x[0] for x in execute_query(f'SELECT COUNT(a) FROM {table} GROUP BY a LIMIT {i}')]
 
 # Try the same restricting the scan to a single partition instead of a
 # whole-table scan. We should get just one row (the first row in the

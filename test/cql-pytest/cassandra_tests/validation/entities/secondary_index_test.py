@@ -142,8 +142,8 @@ def testNamelessIndex(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             assert_rows(execute(cql, table, "SELECT id FROM %s WHERE birth_year = 42"),
-                       ["Tom"],
-                       ["Bob"])
+                       ["Bob"],
+                       ["Tom"])
 
         execute(cql, table, "DROP INDEX %s_birth_year_idx")
 
@@ -191,9 +191,9 @@ def testIndexOnComposite(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             assert_rows(execute(cql, table, "SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
-                       [1, 0],
                        [0, 0],
-                       [0, 2])
+                       [0, 2],
+                       [1, 0])
 
         execute(cql, table, "INSERT INTO %s (blog_id, timestamp, author, content) VALUES (?, ?, ?, ?)", 1, 1, "tom", "6th post")
         execute(cql, table, "INSERT INTO %s (blog_id, timestamp, author, content) VALUES (?, ?, ?, ?)", 1, 2, "tom", "7th post")
@@ -201,18 +201,18 @@ def testIndexOnComposite(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             assert_rows(execute(cql, table, "SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
-                       [1, 0],
-                       [1, 3],
                        [0, 0],
-                       [0, 2])
+                       [0, 2],
+                       [1, 0],
+                       [1, 3])
 
         execute(cql, table, "DELETE FROM %s WHERE blog_id = 0 AND timestamp = 2")
 
         for _ in before_and_after_flush(cql, table):
             assert_rows(execute(cql, table, "SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
+                       [0, 0],
                        [1, 0],
-                       [1, 3],
-                       [0, 0])
+                       [1, 3])
 
 # Test for the validation bug of CASSANDRA-4709,
 # migrated from cql_tests.py:TestCQL.refuse_in_with_indexes_test()
@@ -304,9 +304,9 @@ def testIndexOnCollections(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             # lists
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 1"), [1, 0], [0, 0], [0, 2])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 1"), [0, 0], [0, 2], [1, 0])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND l CONTAINS 1"), [0, 0], [0, 2])
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 2"), [1, 0], [0, 0])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 2"), [0, 0], [1, 0])
             assert_empty(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 6"))
 
             # sets
@@ -316,7 +316,7 @@ def testIndexOnCollections(cql, test_keyspace):
             assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE s CONTAINS 'e'"))
 
             # maps
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 1"), [1, 0], [1, 1], [0, 0], [0, 1])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 1"), [0, 0], [0, 1], [1, 0], [1, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS 1"), [0, 0], [0, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 2"), [0, 1])
             assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE m CONTAINS 4"))
@@ -337,9 +337,9 @@ def testSelectOnMultiIndexOnCollectionsWithNull(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             # lists
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND l CONTAINS 1 ALLOW FILTERING"), [1, 0], [0, 0], [0, 2])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND l CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 2], [1, 0])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND k = 0 AND l CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 2])
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND l CONTAINS 2 ALLOW FILTERING"), [1, 0], [0, 0])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND l CONTAINS 2 ALLOW FILTERING"), [0, 0], [1, 0])
             assert_empty(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND l CONTAINS 6 ALLOW FILTERING"))
 
             # sets
@@ -349,7 +349,7 @@ def testSelectOnMultiIndexOnCollectionsWithNull(cql, test_keyspace):
             assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE x = 'x' AND s CONTAINS 'e' ALLOW FILTERING"))
 
             # maps
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND m CONTAINS 1 ALLOW FILTERING"), [1, 0], [1, 1], [0, 0], [0, 1])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND m CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 1], [1, 0], [1, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND k = 0 AND m CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE x = 'x' AND m CONTAINS 2 ALLOW FILTERING"), [0, 1])
             assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE x = 'x' AND m CONTAINS 4 ALLOW FILTERING"))
@@ -367,7 +367,7 @@ def testIndexOnMapKeys(cql, test_keyspace):
 
         # maps
         for _ in before_and_after_flush(cql, table):
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'a'"), [1, 1], [0, 0], [0, 1])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'a'"), [0, 0], [0, 1], [1, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS KEY 'a'"), [0, 0], [0, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'c'"), [0, 2])
             assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE m CONTAINS KEY 'd'"))
@@ -389,9 +389,9 @@ def testIndexOnKeyWithReverseClustering(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE k2 = 0 AND v >= 2 ALLOW FILTERING"),
-                       [2, 0, 7],
                        [0, 0, 3],
-                       [1, 0, 4])
+                       [1, 0, 4],
+                       [2, 0, 7])
 
 # Test for CASSANDRA-6612,
 # migrated from cql_tests.py:TestCQL.bug_6612_test()
@@ -817,15 +817,15 @@ def testAllowFilteringOnPartitionKeyWithSecondaryIndex(cql, test_keyspace):
             assert_empty(execute(cql, table, "SELECT * FROM %s WHERE pk1 = 1 AND  c1 > 0 AND c1 < 5 AND c2 = 1 AND v = 3 ALLOW FILTERING;"))
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE pk1 = 1 AND  c1 > 0 AND c1 < 5 AND c2 = 3 AND v = 3 ALLOW FILTERING;"),
-                       [1, 3, 3, 3, 3],
                        [1, 1, 1, 3, 3],
-                       [1, 1, 3, 3, 3])
+                       [1, 1, 3, 3, 3],
+                       [1, 3, 3, 3, 3])
 
             assert_empty(execute(cql, table, "SELECT * FROM %s WHERE pk1 = 1 AND  c2 > 1 AND c2 < 5 AND v = 1 ALLOW FILTERING;"))
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE pk1 = 1 AND  c1 > 1 AND c2 > 2 AND v = 3 ALLOW FILTERING;"),
-                       [1, 3, 3, 3, 3],
-                       [1, 1, 3, 3, 3])
+                       [1, 1, 3, 3, 3],
+                       [1, 3, 3, 3, 3])
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE pk1 = 1 AND  pk2 > 1 AND c2 > 2 AND v = 3 ALLOW FILTERING;"),
                        [1, 3, 3, 3, 3])
@@ -835,9 +835,9 @@ def testAllowFilteringOnPartitionKeyWithSecondaryIndex(cql, test_keyspace):
                                     [2, 2, 2, 2, 2])
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE pk1 >= 2 AND pk2 <=3 AND  c1 IN(0,1,2) AND c2 IN(0,1,2) AND v < 3  ALLOW FILTERING;"),
-                       [2, 2, 2, 2, 2],
                        [2, 1, 1, 2, 2],
-                       [2, 1, 2, 2, 2])
+                       [2, 1, 2, 2, 2],
+                       [2, 2, 2, 2, 2])
 
             # Issue #8714: Scylla and Cassandra differ on the specific error
             # message in this case: Scylla complains that inequality is not
@@ -947,7 +947,7 @@ def testIndexOnFrozenUDT(cql, test_keyspace):
             index_name = table.split('.')[1] + "_v_idx"
             assert(wait_for_index(cql, table, index_name))
 
-            assert_rows(execute(cql, table, "SELECT * FROM %s WHERE v = ?", udt1), [1, udt1], [0, udt1])
+            assert_rows(execute(cql, table, "SELECT * FROM %s WHERE v = ?", udt1), [0, udt1], [1, udt1])
             assert_empty(execute(cql, table, "SELECT * FROM %s WHERE v = ?", udt2))
 
             execute(cql, table, "DELETE FROM %s WHERE k = 0")

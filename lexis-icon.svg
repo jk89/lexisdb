@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="210 111 835 1024" width="835" height="1024">
+  <title>Lexis</title>
+  <!-- Hexagon outline -->
+  <path d="M 671.9,172.3 L 965.1,343.7 Q 1010,370 1010.0,422.0 L 1010.0,828.0 Q 1010,880 964.9,905.9 L 672.1,1074.1 Q 627,1100 581.9,1074.0 L 290.1,906.0 Q 245,880 245.0,828.0 L 245.0,422.0 Q 245,370 289.9,343.7 L 582.1,172.3 Q 627,146 671.9,172.3 Z"
+        fill="#FFFFFF" stroke="#282660" stroke-width="30" stroke-linejoin="round"/>
+
+  <!-- Byte column: token boundaries in byte order -->
+  <rect x="380" y="362" width="155" height="128" rx="6" fill="#7AB8EE"/>
+  <rect x="380" y="505" width="155" height="128" rx="6" fill="#4787EE"/>
+  <rect x="380" y="648" width="155" height="125" rx="6" fill="#5260E3"/>
+  <rect x="380" y="787" width="155" height="123" rx="6" fill="#8E66DE"/>
+  <g font-family="DejaVu Sans, Arial, Helvetica, sans-serif" font-size="72" font-weight="700"
+     fill="#FFFFFF" text-anchor="middle" letter-spacing="6">
+    <text x="458" y="452">00</text>
+    <text x="458" y="595">7F</text>
+    <text x="458" y="736">80</text>
+    <text x="458" y="873">FF</text>
+  </g>
+
+  <!-- Divider -->
+  <line x1="590" y1="332" x2="590" y2="903" stroke="#282660" stroke-width="18" stroke-linecap="round"/>
+
+  <!-- Tablets: contiguous ranges, pointing along the key space -->
+  <g stroke-linejoin="round" stroke-width="8">
+    <polygon points="619,399 846,399 886,459 846,519 619,519" fill="#7AB8EE" stroke="#7AB8EE"/>
+    <polygon points="619,556 879,556 921,621 879,686 619,686" fill="#4787EE" stroke="#4787EE"/>
+    <polygon points="619,722 879,722 921,785 879,848 619,848" fill="#8E66DE" stroke="#8E66DE"/>
+  </g>
+</svg>

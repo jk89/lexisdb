@@ -59,11 +59,11 @@ def testStaticCompactTables(cql, test_keyspace):
                    ["value2"]
         )
 
-        # Murmur3 order
+        # Partition key order (Lexis)
         assert_rows(execute(cql, table, "SELECT * FROM %s"),
-                   ["third", 3, "value3"],
+                   ["first", 1, "value1"],
                    ["second", 2, "value2"],
-                   ["first", 1, "value1"]
+                   ["third", 3, "value3"]
         )
 
 def testCompactStorageUpdateWithNull(cql, test_keyspace):
@@ -808,8 +808,8 @@ def testDenseStaticTable(cql, test_keyspace):
                    row(id1, 32, "Frodo", "Baggins"))
 
         assert_rows(execute(cql, table, "SELECT * FROM %s"),
-                   row(id2, 33, "Samwise", "Gamgee"),
-                   row(id1, 32, "Frodo", "Baggins")
+                   row(id1, 32, "Frodo", "Baggins"),
+                   row(id2, 33, "Samwise", "Gamgee")
         )
 
         batch = "BEGIN BATCH INSERT INTO %s (userid, age) VALUES (?, ?) UPDATE %s SET age = ? WHERE userid = ? DELETE firstname, lastname FROM %s WHERE userid = ? DELETE firstname, lastname FROM %s WHERE userid = ? APPLY BATCH"
@@ -817,8 +817,8 @@ def testDenseStaticTable(cql, test_keyspace):
         execute(cql, table, batch, id1, 36, 37, id2, id1, id2)
 
         assert_rows(execute(cql, table, "SELECT * FROM %s"),
-                   row(id2, 37, None, None),
-                   row(id1, 36, None, None))
+                   row(id1, 36, None, None),
+                   row(id2, 37, None, None))
 
 # Creation and basic operations on a non-composite table with compact storage,
 # migrated from cql_tests.py:TestCQL.dynamic_cf_test()
@@ -845,12 +845,12 @@ def testDenseNonCompositeTable(cql, test_keyspace):
                    row(id2, "http://foo-3", 12))
 
         assert_rows(execute(cql, table, "SELECT time FROM %s"),
-                   row(24), # id2
-                   row(12),
                    row(128), # id1
                    row(24),
                    row(12),
-                   row(42)
+                   row(42),
+                   row(24), # id2
+                   row(12)
         )
 
         # Check we don't allow empty values for url since this is the full underlying cell name (CASSANDRA-6152)
@@ -2126,8 +2126,8 @@ def testSelectDistinct(cql, test_keyspace):
 
         assert_rows(execute(cql, table, "SELECT DISTINCT pk0, pk1 FROM %s LIMIT 3"),
                    row(0, 0),
-                   row(2, 2),
-                   row(1, 1))
+                   row(1, 1),
+                   row(2, 2))
 
     # Test a 'wide row' thrift table.
     with create_table(cql, test_keyspace, "(pk int, name text, val int, PRIMARY KEY (pk, name)) WITH COMPACT STORAGE") as table:
@@ -2136,11 +2136,11 @@ def testSelectDistinct(cql, test_keyspace):
             execute(cql, table, "INSERT INTO %s (pk, name, val) VALUES (?, 'name1', 1)", i)
 
         assert_rows(execute(cql, table, "SELECT DISTINCT pk FROM %s LIMIT 1"),
-                   row(1))
+                   row(0))
 
         assert_rows(execute(cql, table, "SELECT DISTINCT pk FROM %s LIMIT 3"),
-                   row(1),
                    row(0),
+                   row(1),
                    row(2))
 
 REQUIRES_ALLOW_FILTERING_MESSAGE = "Cannot execute this query as it might involve data filtering and thus may have unpredictable performance. If you want to execute this query despite the performance unpredictability, use ALLOW FILTERING"

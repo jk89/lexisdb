@@ -1036,7 +1036,7 @@ Where:
 
 * weight (integer) - the weight of the key.
 * key (`ScyllaDB.partition_key <scylla-partition-key-type_>`_) - the partition key.
-* token (integer) - the token (of the key if a key is provided).
+* token (string, hex-encoded ordered token) - the token (of the key if a key is provided).
 
 .. _scylla-now-method:
 
@@ -1075,7 +1075,7 @@ ScyllaDB.partition_start
 Attributes:
 
 * key - the partition key's value as the appropriate Lua native type.
-* token (integer) - the partition key's token.
+* token (string, hex-encoded ordered token) - the partition key's token.
 * tombstone (`ScyllaDB.tombstone <scylla-tombstone-type_>`_) - the partition tombstone, ``nil`` if no tombstone.
 
 .. _scylla-position-in-partition-type:
@@ -1116,7 +1116,7 @@ ScyllaDB.ring_position
 
 Attributes:
 
-* token (integer) - the token, ``nil`` if the ring position represents the min or max ring positions.
+* token (string, hex-encoded ordered token) - the token, ``nil`` if the ring position represents the min or max ring positions.
 * key (`ScyllaDB.partition_key <scylla-partition-key-type_>`_) - the partition key, ``nil`` if the ring position represents a position before/after a token.
 * weight (integer) - weight of the position, either -1 (before key/token), 0 (at key) or 1 (after key/token). If key attribute is ``nil``, the weight is never 0.
 
@@ -1186,7 +1186,7 @@ Argument is string, using the same format as the CQL timestamp type, see https:/
 ScyllaDB.token_of()
 """""""""""""""""""
 
-Compute and return the token (integer) for a `ScyllaDB.partition_key <scylla-partition-key-type_>`_.
+Compute and return the token (string, hex-encoded ordered token) for a `ScyllaDB.partition_key <scylla-partition-key-type_>`_.
 
 .. _scylla-tombstone-type:
 

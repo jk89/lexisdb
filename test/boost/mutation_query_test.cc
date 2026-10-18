@@ -530,12 +530,13 @@ SEASTAR_TEST_CASE(test_partition_limit) {
         {
             reconcilable_result result = mutation_query(s, semaphore.make_permit(), src, query::full_partition_range, slice, query::max_rows, 1, now);
 
+            // The first live partition in token order, which is key order (key1 only has a tombstone).
             assert_that(to_result_set(result, s, slice))
                 .has_size(1)
                 .has(a_row()
-                    .with_column("pk", data_value(bytes("key3")))
-                    .with_column("ck", data_value(bytes("B")))
-                    .with_column("v1", data_value(bytes("B:v"))));
+                    .with_column("pk", data_value(bytes("key2")))
+                    .with_column("ck", data_value(bytes("A")))
+                    .with_column("v1", data_value(bytes("A:v"))));
         }
     });
 }

@@ -58,7 +58,7 @@ public:
      * for that, use tokenFactory.fromString.)
      */
     virtual token get_token(const schema& s, partition_key_view key) const = 0;
-    virtual token get_token(const sstables::key_view& key) const = 0;
+    virtual token get_token(const schema& s, const sstables::key_view& key) const = 0;
 
     // FIXME: token.tokenFactory
     //virtual token.tokenFactory gettokenFactory() = 0;

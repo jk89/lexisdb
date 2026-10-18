@@ -211,7 +211,7 @@ def test_filter_with_unused_static_column(cql, test_keyspace, scylla_only):
                     with new_materialized_view(cql, table, select='p,c,v', pk='p,c,v', where=where) as mv:
                         cql.execute(f"INSERT INTO {table} (p,c,v) VALUES (42,43,44)")
                         cql.execute(f"INSERT INTO {table} (p,c,v) VALUES (1,2,3)")
-                        expected = [(42,43,44)] if '4' in where else [(42,43,44),(1,2,3)]
+                        expected = [(42,43,44)] if '4' in where else [(1,2,3),(42,43,44)]
                         assert list(cql.execute(f"SELECT * FROM {mv}")) == expected
 
 # Ensure that we don't allow materialized views which contain static rows.

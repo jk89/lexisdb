@@ -20,7 +20,7 @@
 #include "utils/histogram.hh"
 #include "mutation/partition_version.hh"
 #include <seastar/core/metrics_registration.hh>
-#include "utils/double-decker.hh"
+#include "utils/intrusive_btree.hh"
 #include "db/cache_tracker.hh"
 #include "readers/empty_v2.hh"
 #include "readers/mutation_source.hh"
@@ -50,15 +50,13 @@ class lsa_manager;
 //
 // TODO: Make memtables use this format too.
 class cache_entry {
+    intrusive_b::member_hook _link;
     dht::decorated_key _key;
     partition_entry _pe;
     // True when we know that there is nothing between this entry and the previous one in cache
     struct {
         bool _continuous : 1;
         bool _dummy_entry : 1;
-        bool _head : 1;
-        bool _tail : 1;
-        bool _train : 1;
     } _flags{};
     friend class size_calculator;
 
@@ -67,13 +65,6 @@ class cache_entry {
 public:
     friend class row_cache;
     friend class cache_tracker;
-
-    bool is_head() const noexcept { return _flags._head; }
-    void set_head(bool v) noexcept { _flags._head = v; }
-    bool is_tail() const noexcept { return _flags._tail; }
-    void set_tail(bool v) noexcept { _flags._tail = v; }
-    bool with_train() const noexcept { return _flags._train; }
-    void set_train(bool v) noexcept { _flags._train = v; }
 
     struct dummy_entry_tag{};
     struct evictable_tag{};
@@ -153,10 +144,14 @@ public:
 class row_cache final {
 public:
     using phase_type = utils::phased_barrier::phase_type;
-    using partitions_type = double_decker<int64_t, cache_entry,
-                            dht::raw_token_less_comparator, dht::ring_position_comparator,
-                            16, bplus::key_search::linear>;
-    static_assert(bplus::SimpleLessCompare<int64_t, dht::raw_token_less_comparator>);
+    // Ordered by the full ring position. Tokens are variable-length, so the
+    // tree is keyless: nodes point at the entries and compare them directly.
+    using partitions_type = intrusive_b::tree<cache_entry, &cache_entry::_link,
+                            dht::ring_position_comparator, 12, 20, intrusive_b::key_search::linear>;
+    // Result of a lookup: whether the entry found is at the looked up position.
+    struct bound_hint {
+        bool match = false;
+    };
     friend class cache::autoupdating_underlying_reader;
     friend class single_partition_populating_reader;
     friend class cache_entry;
@@ -284,7 +279,7 @@ private:
     };
 
     template<typename CreateEntry, typename VisitEntry>
-    requires requires(CreateEntry create, VisitEntry visit, partitions_type::iterator it, partitions_type::bound_hint hint) {
+    requires requires(CreateEntry create, VisitEntry visit, partitions_type::iterator it, bound_hint hint) {
         { create(it, hint) } -> std::same_as<partitions_type::iterator>;
         { visit(it) } -> std::same_as<void>;
     }
@@ -304,6 +299,14 @@ private:
     // Creates (or touches) a cache entry for missing partition so that sstables are not
     // poked again for it.
     cache_entry& find_or_create_missing(const dht::decorated_key& key);
+
+    // Allocates an entry with the current allocator and links it before i.
+    // Must be run under reclaim lock.
+    template <typename... Args>
+    partitions_type::iterator emplace_entry_before(partitions_type::iterator i, Args&&... args) {
+        auto e = alloc_strategy_unique_ptr<cache_entry>(current_allocator().construct<cache_entry>(std::forward<Args>(args)...));
+        return _partitions.insert_before(i, std::move(e));
+    }
 
     partitions_type::iterator partitions_end() {
         return std::prev(_partitions.end());

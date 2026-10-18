@@ -790,7 +790,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             adjust_and_verify_rlimit(cfg->developer_mode());
             verify_adequate_memory_per_shard(cfg->developer_mode());
             verify_seastar_io_scheduler(opts, cfg->developer_mode());
-            if (cfg->partitioner() != "org.apache.cassandra.dht.Murmur3Partitioner") {
+            if (cfg->partitioner() != "org.lexis.dht.LexisByteOrderedPartitioner") {
                 if (cfg->enable_deprecated_partitioners()) {
                     startlog.warn("The partitioner {} is deprecated and will be removed in a future version."
                             "  Contact scylladb-users@googlegroups.com if you are using it in production", cfg->partitioner());

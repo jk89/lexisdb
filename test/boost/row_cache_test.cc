@@ -544,6 +544,57 @@ static std::vector<mutation> make_ring(schema_ptr s, int n_mutations) {
     return mutations;
 }
 
+// Tokens are the order-preserving encoding of the partition key, so the tokens
+// of partitions whose keys share a long prefix share that prefix too. The cache
+// must keep any number of them, in order, through population in random order,
+// scans and invalidation.
+SEASTAR_THREAD_TEST_CASE(test_cache_partitions_with_shared_token_prefix) {
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+    auto s = schema_builder("ks", "cf")
+            .with_column("tenant", utf8_type, column_kind::partition_key)
+            .with_column("user", int32_type, column_kind::partition_key)
+            .with_column("v", int32_type)
+            .build();
+    const int n = 33000;
+    std::vector<mutation> muts;
+    for (int user = 0; user < n; ++user) {
+        auto pk = partition_key::from_exploded(*s, {utf8_type->decompose(sstring("a-long-tenant-name")), int32_type->decompose(user)});
+        mutation m(s, pk);
+        m.set_cell(clustering_key_prefix::make_empty(), "v", data_value(user), 1);
+        muts.push_back(std::move(m));
+    }
+    auto mt = make_memtable(s, muts);
+    cache_tracker tracker;
+    row_cache cache(s, snapshot_source_from_snapshot(mt->as_data_source()), tracker);
+
+    // Populate partition by partition, in random order.
+    std::shuffle(muts.begin(), muts.end(), tests::random::gen());
+    for (auto& m : muts) {
+        auto pr = dht::partition_range::make_singular(m.decorated_key());
+        assert_that(cache.make_reader(s, semaphore.make_permit(), pr))
+            .produces(m)
+            .produces_end_of_stream();
+    }
+    logalloc::shard_tracker().full_compaction();
+    std::sort(muts.begin(), muts.end(), mutation_decorated_key_less_comparator());
+    BOOST_REQUIRE_EQUAL(tracker.get_stats().partitions, uint64_t(n));
+
+    auto check_scan = [&] {
+        auto a = assert_that(cache.make_reader(s, semaphore.make_permit(), query::full_partition_range));
+        for (auto& m : muts) {
+            a.produces(m);
+        }
+        a.produces_end_of_stream();
+    };
+    check_scan();
+
+    // Invalidate the middle half; the scan repopulates it from the memtable.
+    auto middle = dht::partition_range::make({muts[n / 4].decorated_key(), true}, {muts[3 * n / 4].decorated_key(), false});
+    cache.invalidate(row_cache::external_updater([] {}), middle).get();
+    BOOST_REQUIRE_EQUAL(tracker.get_stats().partitions, uint64_t(n - n / 2));
+    check_scan();
+}
+
 SEASTAR_TEST_CASE(test_query_of_incomplete_range_goes_to_underlying) {
     return seastar::async([] {
         auto s = make_schema();

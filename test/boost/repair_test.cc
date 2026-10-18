@@ -160,7 +160,8 @@ SEASTAR_TEST_CASE(test_reader_with_different_strategies) {
         {
             auto mutations = gen(100);
             for (const auto& m: mutations) {
-                const auto t = m.token().raw();
+                // The signed 64-bit projection; from_int64() of it is <= the token.
+                const auto t = int64_t(m.token().unbias() ^ (uint64_t(1) << 63));
                 min_token = std::min(min_token, t);
                 max_token = std::max(max_token, t);
             }

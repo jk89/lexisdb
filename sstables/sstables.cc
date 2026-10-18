@@ -542,7 +542,7 @@ future<> parse(const schema& schema, sstable_version_types v, random_access_read
 
         // position is little-endian encoded
         auto position = seastar::read_le<uint64_t>(buf.get());
-        auto token = schema.get_partitioner().get_token(key_view(key_data));
+        auto token = schema.get_partitioner().get_token(schema, key_view(key_data));
         s.entries.push_back(summary_entry{ token, key_data, position });
     }
     // Delete last element which isn't part of the on-disk format.
@@ -1734,12 +1734,36 @@ create_sharding_metadata(utils::chunked_vector<dht::partition_range> ranges) {
             auto&& left = range.start()->value();
             auto&& right = range.end()->value();
             auto&& left_token = left.token();
-            auto left_exclusive = !left.has_key() && left.bound() == dht::ring_position::token_bound::end;
+            bool left_exclusive = !left.has_key() && left.bound() == dht::ring_position::token_bound::end;
             auto&& right_token = right.token();
-            auto right_exclusive = !right.has_key() && right.bound() == dht::ring_position::token_bound::start;
+            bool right_exclusive = !right.has_key() && right.bound() == dht::ring_position::token_bound::start;
+            // Tokens are stored with a 16-bit length. A longer token (a very large
+            // partition key) is replaced by a shorter one that only widens the range.
+            constexpr size_t max_len = std::numeric_limits<uint16_t>::max();
+            bytes left_data = to_bytes(left_token.data());
+            if (left_data.size() > max_len) {
+                // A prefix sorts no later than the token.
+                left_data.resize(max_len);
+                left_exclusive = false;
+            }
+            bytes right_data = to_bytes(right_token.data());
+            if (right_data.size() > max_len) {
+                // Increment the last non-0xff byte of a prefix: sorts after every token with that prefix.
+                right_data.resize(max_len);
+                size_t i = right_data.size();
+                while (i > 0 && uint8_t(right_data[i - 1]) == 0xff) {
+                    --i;
+                }
+                if (i == 0) {
+                    on_internal_error(sstlog, "create_sharding_metadata: cannot shorten an all-0xff token");
+                }
+                right_data[i - 1] = int8_t(uint8_t(right_data[i - 1]) + 1);
+                right_data.resize(i);
+                right_exclusive = false;
+            }
             sm.token_ranges.elements.push_back(disk_token_range{
-                {left_exclusive, {left_token.data()}},
-                {right_exclusive, {right_token.data()}}});
+                {left_exclusive, {std::move(left_data)}},
+                {right_exclusive, {std::move(right_data)}}});
         }
     }
     return sm;
@@ -2057,20 +2081,20 @@ future<> sstable::generate_summary() {
 
     sstlog.info("Summary file {} not found. Generating Summary...", filename(component_type::Summary));
     class summary_generator {
-        const dht::i_partitioner& _partitioner;
+        const schema& _schema;
         summary& _summary;
         index_sampling_state _state;
     public:
         std::optional<key> first_key, last_key;
 
-        summary_generator(const dht::i_partitioner& p, summary& s, double summary_ratio) : _partitioner(p), _summary(s) {
+        summary_generator(const schema& schema, summary& s, double summary_ratio) : _schema(schema), _summary(s) {
             _state.summary_byte_cost = summary_byte_cost(summary_ratio);
         }
         bool should_continue() {
             return true;
         }
         void consume_entry(parsed_partition_index_entry&& e) {
-            auto token = _partitioner.get_token(key_view(to_bytes_view(e.key)));
+            auto token = _schema.get_partitioner().get_token(_schema, key_view(to_bytes_view(e.key)));
             maybe_add_summary_entry(_summary, token, to_bytes_view(e.key), e.data_file_offset, e.index_offset, _state);
             if (!first_key) {
                 first_key = key(to_bytes(to_bytes_view(e.key)));
@@ -2098,7 +2122,7 @@ future<> sstable::generate_summary() {
         file_input_stream_options options;
         options.buffer_size = sstable_buffer_size;
 
-        auto s = summary_generator(_schema->get_partitioner(), _components->summary, _manager.config().sstable_summary_ratio());
+        auto s = summary_generator(*_schema, _components->summary, _manager.config().sstable_summary_ratio());
             auto ctx = make_lw_shared<index_consume_entry_context<summary_generator>>(
                     *this, sem.make_tracking_only_permit(_schema, "generate-summary", db::no_timeout, {}), s, trust_promoted_index::yes,
                     make_file_input_stream(index_file, 0, index_size, std::move(options)), 0, index_size,
@@ -2878,7 +2902,7 @@ std::optional<std::pair<uint64_t, uint64_t>> sstable::get_sample_indexes_for_ran
         auto kind = before ? key::kind::before_all_keys : key::kind::after_all_keys;
         key k(kind);
         // Binary search will never returns positive values.
-        return uint64_t((binary_search(_schema->get_partitioner(), _components->summary.entries, k, token) + 1) * -1);
+        return uint64_t((binary_search(*_schema, _components->summary.entries, k, token) + 1) * -1);
     };
     uint64_t left = 0;
     if (range.start()) {
@@ -3010,8 +3034,8 @@ sstable::compute_shards_for_this_sstable(const dht::sharder& sharder_) const {
                 dht::ring_position::ending_at(get_last_decorated_key().token())));
     } else {
         auto disk_token_range_to_ring_position_range = [] (const disk_token_range& dtr) {
-            auto t1 = dht::token(dht::token::kind::key, bytes_view(dtr.left.token));
-            auto t2 = dht::token(dht::token::kind::key, bytes_view(dtr.right.token));
+            auto t1 = dht::token(dht::token::kind::key, dtr.left.token.value);
+            auto t2 = dht::token(dht::token::kind::key, dtr.right.token.value);
             return dht::partition_range::make(
                     (dtr.left.exclusive ? dht::ring_position::ending_at : dht::ring_position::starting_at)(std::move(t1)),
                     (dtr.right.exclusive ? dht::ring_position::starting_at : dht::ring_position::ending_at)(std::move(t2)));

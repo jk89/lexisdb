@@ -84,6 +84,72 @@ SEASTAR_TEST_CASE(test_memtable_conforms_to_mutation_source) {
     });
 }
 
+// Tokens are the order-preserving encoding of the partition key, so the tokens
+// of partitions whose keys share a long prefix (one tenant's users, say) share
+// that prefix too. The memtable must keep any number of them, in order.
+SEASTAR_THREAD_TEST_CASE(test_memtable_partitions_with_shared_token_prefix) {
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+    auto s = schema_builder("ks", "cf")
+            .with_column("tenant", utf8_type, column_kind::partition_key)
+            .with_column("user", int32_type, column_kind::partition_key)
+            .with_column("v", int32_type)
+            .build();
+    // More than 2^15, so more than one array of entries per tree key could hold
+    // when the tree was keyed by the first 8 token bytes.
+    const int n = 33000;
+    std::vector<mutation> muts;
+    for (int user = 0; user < n; ++user) {
+        auto pk = partition_key::from_exploded(*s, {utf8_type->decompose(sstring("a-long-tenant-name")), int32_type->decompose(user)});
+        mutation m(s, pk);
+        m.set_cell(clustering_key_prefix::make_empty(), "v", data_value(user), 1);
+        muts.push_back(std::move(m));
+    }
+    std::shuffle(muts.begin(), muts.end(), tests::random::gen());
+    auto mt = make_lw_shared<replica::memtable>(s);
+    for (auto& m : muts) {
+        mt->apply(m);
+    }
+    logalloc::shard_tracker().full_compaction();
+    std::sort(muts.begin(), muts.end(), mutation_decorated_key_less_comparator());
+    BOOST_REQUIRE_EQUAL(mt->partition_count(), n);
+
+    auto a = assert_that(mt->make_flat_reader(s, semaphore.make_permit()));
+    for (auto& m : muts) {
+        a.produces(m);
+    }
+    a.produces_end_of_stream();
+
+    for (int i : {0, n / 2, n - 1}) {
+        auto pr = dht::partition_range::make_singular(muts[i].decorated_key());
+        assert_that(mt->make_flat_reader(s, semaphore.make_permit(), pr))
+            .produces(muts[i])
+            .produces_end_of_stream();
+    }
+}
+
+// Tokens are as long as the encoded partition key. They must be allocated in
+// the memtable's LSA region with the rest of the entry, so that dirty memory
+// accounting (and thus flushing) sees them.
+SEASTAR_THREAD_TEST_CASE(test_memtable_accounts_token_memory) {
+    auto s = schema_builder("ks", "cf")
+            .with_column("pk", utf8_type, column_kind::partition_key)
+            .with_column("v", int32_type)
+            .build();
+    const size_t n = 1000;
+    const size_t key_size = 500;
+    auto mt = make_lw_shared<replica::memtable>(s);
+    for (size_t i = 0; i < n; ++i) {
+        auto key = fmt::format("{:0>{}}", i, key_size);
+        mutation m(s, partition_key::from_single_value(*s, to_bytes(key)));
+        m.set_cell(clustering_key_prefix::make_empty(), "v", data_value(int32_t(i)), 1);
+        mt->apply(m);
+    }
+    auto token_size = dht::decorate_key(*s, partition_key::from_single_value(*s, to_bytes(std::string(key_size, '0')))).token().data().size();
+    BOOST_REQUIRE_GE(token_size, key_size);
+    // The partition key and the token of every entry are in LSA memory.
+    BOOST_REQUIRE_GE(mt->occupancy().used_space(), n * (key_size + token_size));
+}
+
 static future<> test_memtable(void (*run_tests)(populate_fn_ex, bool)) {
     return seastar::async([run_tests] {
         tests::reader_concurrency_semaphore_wrapper semaphore;

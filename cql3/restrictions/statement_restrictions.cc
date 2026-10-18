@@ -28,6 +28,8 @@
 #include "cql3/selection/selection.hh"
 #include "cql3/statements/request_validations.hh"
 #include "dht/i_partitioner.hh"
+#include "dht/ordered_encoding.hh"
+#include "dht/ordered_partitioner.hh"
 
 namespace {
 struct maybe_column_definition {
@@ -670,12 +672,9 @@ void statement_restrictions::add_is_not_restriction(const expr::binary_operator&
 }
 
 void statement_restrictions::add_single_column_parition_key_restriction(const expr::binary_operator& restr, schema_ptr schema, bool allow_filtering, bool for_view) {
-    // View definition allows PK slices, because it's not a performance problem.
-    if (restr.op != expr::oper_t::EQ && restr.op != expr::oper_t::IN && !allow_filtering && !for_view) {
-        throw exceptions::invalid_request_exception(
-                "Only EQ and IN relation are supported on the partition key "
-                "(unless you use the token() function or ALLOW FILTERING)");
-    }
+    // Slices on partition key columns are checked in process_partition_key_restrictions(),
+    // once all restrictions are known: under ordered partitioning a slice that
+    // follows an EQ/IN prefix is a token range read.
     if (has_token_restrictions()) {
         throw exceptions::invalid_request_exception(
                 seastar::format("Columns \"{}\" cannot be restricted by both a normal relation and a token relation",
@@ -809,8 +808,25 @@ void statement_restrictions::process_partition_key_restrictions(bool for_view, b
         _uses_secondary_indexing = _has_queriable_pk_index;
     }
 
+    // A prefix/range query on the partition key reads a contiguous token range,
+    // so it needs no ALLOW FILTERING. The restrictions are still applied as a
+    // filter on top, so the token range only has to cover the matching keys.
+    // Only for SELECT: modification statements expect single-key ranges.
+    if (type.is_select()) {
+        compute_pk_ordered_prefix();
+    }
+    const bool ordered_range_query = _pk_ordered_covers_all;
+
+    // View definition allows PK slices, because it's not a performance problem.
+    if (!allow_filtering && !for_view && !ordered_range_query && !has_token_restrictions()
+            && expr::has_slice(_partition_key_restrictions)) {
+        throw exceptions::invalid_request_exception(
+                "Only EQ and IN relation are supported on the partition key "
+                "(unless you use the token() function or ALLOW FILTERING)");
+    }
+
     if (pk_restrictions_need_filtering()) {
-        if (!allow_filtering && !for_view && !_has_queriable_pk_index && !type.is_delete() && !type.is_update()) {
+        if (!allow_filtering && !for_view && !ordered_range_query && !_has_queriable_pk_index && !type.is_delete() && !type.is_update()) {
             throw exceptions::invalid_request_exception("Cannot execute this query as it might involve data filtering and "
                 "thus may have unpredictable performance. If you want to execute "
                 "this query despite the performance unpredictability, use ALLOW FILTERING");
@@ -837,6 +853,13 @@ bool statement_restrictions::partition_key_restrictions_is_all_eq() const {
 
 size_t statement_restrictions::partition_key_restrictions_size() const {
     return expr::get_sorted_column_defs(_partition_key_restrictions).size();
+}
+
+bool statement_restrictions::is_ordered_partition_range_only() const {
+    return _pk_ordered_covers_all
+            && !_uses_secondary_indexing
+            && expr::is_empty_restriction(_clustering_columns_restrictions)
+            && expr::is_empty_restriction(_nonprimary_key_restrictions);
 }
 
 bool statement_restrictions::pk_restrictions_need_filtering() const {
@@ -1091,7 +1114,186 @@ dht::partition_range_vector partition_ranges_from_EQs(
 
 } // anonymous namespace
 
+// Types whose order-preserving encoding (dht/ordered_encoding.cc) sorts
+// exactly like the CQL type, so a slice on the column is a token range.
+static bool ordered_encoding_preserves_order(const abstract_type& t) {
+    switch (t.without_reversed().get_kind()) {
+    case abstract_type::kind::utf8:
+    case abstract_type::kind::ascii:
+    case abstract_type::kind::bytes:
+    case abstract_type::kind::boolean:
+    case abstract_type::kind::byte:
+    case abstract_type::kind::short_kind:
+    case abstract_type::kind::int32:
+    case abstract_type::kind::long_kind:
+    case abstract_type::kind::timestamp:
+    case abstract_type::kind::simple_date:
+    case abstract_type::kind::time:
+    case abstract_type::kind::varint:
+    case abstract_type::kind::decimal:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Types whose encoding gives equal CQL values equal bytes, so EQ/IN on the
+// column fixes a token prefix. Floats are excluded: -0.0 and 0.0 are equal in
+// CQL but encode differently.
+static bool ordered_encoding_preserves_equality(const abstract_type& t) {
+    switch (t.without_reversed().get_kind()) {
+    case abstract_type::kind::float_kind:
+    case abstract_type::kind::double_kind:
+        return false;
+    default:
+        return true;
+    }
+}
+
+static bool only_ops(const expr::expression& e, std::initializer_list<expr::oper_t> ops) {
+    bool ok = true;
+    expr::for_each_expression<expr::binary_operator>(e, [&] (const expr::binary_operator& b) {
+        if (!expr::is<expr::column_value>(b.lhs) || std::ranges::find(ops, b.op) == ops.end()) {
+            ok = false;
+        }
+    });
+    return ok;
+}
+
+void statement_restrictions::compute_pk_ordered_prefix() {
+    _pk_ordered_prefix.clear();
+    _pk_ordered_slice = nullptr;
+    _pk_ordered_covers_all = false;
+    if (has_token_restrictions() || partition_key_restrictions_is_empty()
+            || _schema->get_partitioner().name() != dht::ordered_partitioner::classname) {
+        return;
+    }
+    using expr::oper_t;
+    size_t used = 0;
+    for (const auto& cdef : _schema->partition_key_columns()) {
+        auto it = _single_column_partition_key_restrictions.find(&cdef);
+        if (it == _single_column_partition_key_restrictions.end()) {
+            break;
+        }
+        if (only_ops(it->second, {oper_t::EQ, oper_t::IN}) && ordered_encoding_preserves_equality(*cdef.type)) {
+            _pk_ordered_prefix.push_back(&cdef);
+            ++used;
+            continue;
+        }
+        if (only_ops(it->second, {oper_t::LT, oper_t::LTE, oper_t::GT, oper_t::GTE}) && ordered_encoding_preserves_order(*cdef.type)) {
+            _pk_ordered_slice = &cdef;
+            ++used;
+        }
+        break;
+    }
+    if (used == 0) {
+        _pk_ordered_prefix.clear();
+        return;
+    }
+    _pk_ordered_covers_all = used == _single_column_partition_key_restrictions.size();
+}
+
+// Every key whose token starts with prefix p sorts before p with its last byte
+// incremented. Encoded components end with the 0x00 0x00 terminator, so the
+// last byte is 0x00 and there is no carry.
+static bytes after_prefix(bytes p) {
+    p[p.size() - 1] = int8_t(uint8_t(p[p.size() - 1]) + 1);
+    return p;
+}
+
+dht::partition_range_vector statement_restrictions::get_pk_ordered_prefix_ranges(const query_options& options) const {
+    const size_t size_limit = options.get_cql_config().restrictions.partition_key_restrictions_max_cartesian_product_size;
+
+    std::vector<data_type> types;
+    std::vector<std::vector<managed_bytes>> prefix_values;
+    size_t product_size = 1;
+    for (const auto* cdef : _pk_ordered_prefix) {
+        types.push_back(cdef->type);
+        auto vals = std::get<expr::value_list>(expr::possible_column_values(cdef, _single_column_partition_key_restrictions.at(cdef), options));
+        if (vals.empty()) {
+            return {};
+        }
+        product_size *= vals.size();
+        error_if_exceeds_partition_key_limit(product_size, size_limit);
+        prefix_values.push_back(std::move(vals));
+    }
+
+    std::optional<interval<managed_bytes>> slice;
+    if (_pk_ordered_slice) {
+        auto vs = expr::possible_column_values(_pk_ordered_slice, _single_column_partition_key_restrictions.at(_pk_ordered_slice), options);
+        if (auto* lst = std::get_if<expr::value_list>(&vs)) {
+            if (lst->empty()) {
+                return {};
+            }
+            // Not expected for a slice-only restriction; read the whole prefix and let filtering decide.
+        } else {
+            slice = std::get<interval<managed_bytes>>(std::move(vs));
+        }
+    }
+
+    auto encode = [&] (std::vector<bytes> components, const std::vector<data_type>& component_types) {
+        return dht::ordered_encoding::encode_serialized_partition_key(components, component_types);
+    };
+
+    dht::partition_range_vector ranges;
+    auto add_range = [&] (std::optional<bytes> lo, std::optional<bytes> hi) {
+        auto lo_token = lo ? dht::token(std::move(*lo)) : dht::minimum_token();
+        auto hi_token = hi ? dht::token(std::move(*hi)) : dht::maximum_token();
+        if (hi_token <= lo_token) {
+            return;
+        }
+        // starting_at(t) lies before every key with token t: the start bound
+        // includes those keys, the end bound excludes them.
+        ranges.push_back(dht::partition_range::make(
+                dht::ring_position::starting_at(std::move(lo_token)),
+                dht::ring_position::starting_at(std::move(hi_token))));
+    };
+
+    std::vector<data_type> slice_types = types;
+    if (_pk_ordered_slice) {
+        slice_types.push_back(_pk_ordered_slice->type);
+    }
+
+    cartesian_product cp(prefix_values);
+    for (const auto& prefix : cp) {
+        std::vector<bytes> components;
+        components.reserve(prefix.size() + 1);
+        for (const auto& v : prefix) {
+            components.push_back(to_bytes(v));
+        }
+        std::optional<bytes> p;
+        if (!components.empty()) {
+            p = encode(components, types);
+        }
+        std::optional<bytes> lo = p;
+        std::optional<bytes> hi = p ? std::optional<bytes>(after_prefix(*p)) : std::nullopt;
+        if (slice) {
+            auto with_value = [&] (const managed_bytes& v) {
+                auto c = components;
+                c.push_back(to_bytes(v));
+                return encode(std::move(c), slice_types);
+            };
+            if (slice->start()) {
+                auto e = with_value(slice->start()->value());
+                lo = slice->start()->is_inclusive() ? std::move(e) : after_prefix(std::move(e));
+            }
+            if (slice->end()) {
+                auto e = with_value(slice->end()->value());
+                hi = slice->end()->is_inclusive() ? after_prefix(std::move(e)) : std::move(e);
+            }
+        }
+        add_range(std::move(lo), std::move(hi));
+    }
+    std::sort(ranges.begin(), ranges.end(), [&] (const dht::partition_range& a, const dht::partition_range& b) {
+        return a.start()->value().token() < b.start()->value().token();
+    });
+    return ranges;
+}
+
 dht::partition_range_vector statement_restrictions::get_partition_key_ranges(const query_options& options) const {
+    if (_partition_range_restrictions.empty() && (!_pk_ordered_prefix.empty() || _pk_ordered_slice)) {
+        return get_pk_ordered_prefix_ranges(options);
+    }
     if (_partition_range_restrictions.empty()) {
         return {dht::partition_range::make_open_ended_both_sides()};
     }
@@ -1489,112 +1691,6 @@ std::vector<query::clustering_range> get_single_column_clustering_bounds(
     std::transform(cp.begin(), cp.end(), ck_ranges.begin(), std::bind_front(query::clustering_range::make_singular));
     sort(ck_ranges.begin(), ck_ranges.end(), range_less{schema});
     return ck_ranges;
-}
-
-// In old v1 indexes the token column was of type blob.
-// This causes problems because blobs are sorted differently than the bigint token values that they represent.
-// Tokens are encoded as 8 byte big endian two's complement signed integers,
-// which with blob sorting makes them ordered like this:
-// 0, 1, 2, 3, 4, 5, ..., bigint_max, bigint_min, ...., -5, -4, -3, -2, -1
-// Because of this clustering restrictions like token(p) > -4 and token(p) < 4 need to be translated
-// to two clustering ranges on the old index.
-// All binary_operators in token_restriction must have column_value{token_column} as their LHS.
-static std::vector<query::clustering_range> get_index_v1_token_range_clustering_bounds(
-        const query_options& options,
-        const column_definition& token_column,
-        const expression& token_restriction) {
-
-    // A workaround in order to make possible_column_values work properly.
-    // possible_column_values looks at the column type and uses this type's comparator.
-    // This is a problem because when using blob's comparator, -4 is greater than 4.
-    // This makes possible_column_values think that an expression like token(p) > -4 and token(p) < 4
-    // is impossible to fulfill.
-    // Create a fake token column with the type set to bigint, translate the restriction to use this column
-    // and use this restriction to calculate possible lhs values.
-    column_definition token_column_bigint = token_column;
-    token_column_bigint.type = long_type;
-    expression new_token_restrictions = replace_column_def(token_restriction, &token_column_bigint);
-
-    std::variant<value_list, interval<managed_bytes>> values =
-        possible_column_values(&token_column_bigint, new_token_restrictions, options);
-
-    return std::visit(overloaded_functor {
-        [](const value_list& list) {
-            std::vector<query::clustering_range> ck_ranges;
-            ck_ranges.reserve(list.size());
-
-            for (auto&& value : list) {
-                ck_ranges.emplace_back(query::clustering_range::make_singular(std::vector<managed_bytes>{value}));
-            }
-
-            return ck_ranges;
-        },
-        [](const interval<managed_bytes>& range) {
-            auto int64_from_be_bytes = [](const managed_bytes& int_bytes) -> int64_t {
-                if (int_bytes.size() != 8) {
-                    throw std::runtime_error("token restriction value should be 8 bytes");
-                }
-
-                return read_be<int64_t>((const char*)&int_bytes[0]);
-            };
-
-            auto int64_to_be_bytes = [](int64_t int_val) -> managed_bytes {
-                managed_bytes int_bytes(managed_bytes::initialized_later{}, 8);
-                write_be((char*)&int_bytes[0], int_val);
-                return int_bytes;
-            };
-
-            int64_t token_low = std::numeric_limits<int64_t>::min();
-            int64_t token_high = std::numeric_limits<int64_t>::max();
-            bool low_inclusive = true, high_inclusive = true;
-
-            const std::optional<interval_bound<managed_bytes>>& start = range.start();
-            const std::optional<interval_bound<managed_bytes>>& end = range.end();
-
-            if (start.has_value()) {
-                token_low = int64_from_be_bytes(start->value());
-                low_inclusive = start->is_inclusive();
-            }
-
-            if (end.has_value()) {
-                token_high = int64_from_be_bytes(end->value());
-                high_inclusive = end->is_inclusive();
-            }
-
-            query::clustering_range::bound lower_bound(std::vector({int64_to_be_bytes(token_low)}), low_inclusive);
-            query::clustering_range::bound upper_bound(std::vector({int64_to_be_bytes(token_high)}), high_inclusive);
-
-            std::vector<query::clustering_range> ck_ranges;
-
-            if (token_high < token_low) {
-                // Impossible range, return empty clustering ranges
-                return ck_ranges;
-            }
-
-            // Blob encoded tokens are sorted like this:
-            // 0, 1, 2, 3, 4, 5, ..., bigint_max, bigint_min, ...., -5, -4, -3, -2, -1
-            // This means that in cases where low >= 0 or high < 0 we can simply use the whole range.
-            // In other cases we have to take two ranges: (low, -1] and [0, high).
-            if (token_low >= 0 || token_high < 0) {
-                ck_ranges.emplace_back(std::move(lower_bound), std::move(upper_bound));
-            } else {
-                query::clustering_range::bound zero_bound(std::vector({int64_to_be_bytes(0)}));
-                query::clustering_range::bound min1_bound(std::vector({int64_to_be_bytes(-1)}));
-
-                ck_ranges.reserve(2);
-
-                if (!(token_high == 0 && !high_inclusive)) {
-                    ck_ranges.emplace_back(std::move(zero_bound), std::move(upper_bound));
-                }
-
-                if (!(token_low == -1 && !low_inclusive)) {
-                    ck_ranges.emplace_back(std::move(lower_bound), std::move(min1_bound));
-                }
-            }
-
-            return ck_ranges;
-        }
-    }, values);
 }
 
 using opt_bound = std::optional<query::clustering_range::bound>;
@@ -2023,14 +2119,9 @@ std::vector<query::clustering_range> statement_restrictions::get_global_index_to
                 rlogger, "statement_restrictions::get_global_index_token_clustering_ranges called with unprepared index");
     }
 
-    const column_definition& token_column = idx_tbl_schema.clustering_column_at(0);
-
-    // In old indexes the token column was of type blob.
-    // This causes problems with sorting and must be handled separately.
-    if (token_column.type != long_type) {
-        return get_index_v1_token_range_clustering_bounds(options, token_column, _idx_tbl_ck_prefix->at(0));
-    }
-
+    // The token column (clustering column 0) is a blob holding the ordered token bytes, so blob order
+    // is token order and no special handling is needed. (Upstream's "v1"
+    // blob-of-int64 index workaround does not apply to ordered tokens.)
     return get_single_column_clustering_bounds(options, idx_tbl_schema, *_idx_tbl_ck_prefix);
 }
 

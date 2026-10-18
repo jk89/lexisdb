@@ -75,9 +75,13 @@ static data_type validate_alter(const schema& schema, const column_definition& d
                     format("counter type is not supported for PRIMARY KEY part {}", def.name_as_text()));
         }
 
-        if (!type->is_value_compatible_with(*def.type)) {
+        // Partition key tokens are an order-preserving encoding of the key
+        // by its column types, so changing a partition key column's type would
+        // change every token without re-sorting stored data.
+        if (type != def.type) {
             throw exceptions::configuration_exception(
-                    format("Cannot change {} from type {} to type {}: types are incompatible.",
+                    format("Cannot change {} from type {} to type {}: the partition key column types determine the "
+                           "token of every partition (ordered partitioning).",
                            def.name_as_text(),
                            def.type->as_cql3_type(),
                            validator));

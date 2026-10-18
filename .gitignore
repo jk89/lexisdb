@@ -34,3 +34,6 @@ compile_commands.json
 .mypy_cache
 .envrc
 clang_build
+/rust/target/
+/.toolchain-includes/
+/.clangd

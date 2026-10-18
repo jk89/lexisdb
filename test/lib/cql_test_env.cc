@@ -109,6 +109,10 @@ cql_test_config::cql_test_config(shared_ptr<db::config> cfg)
 
     db_config->flush_schema_tables_after_modification.set(false);
     db_config->commitlog_use_o_dsync(false);
+
+    // Lexis enables tablets by default; unit tests keep upstream's default and
+    // opt in to tablets explicitly (e.g. tablet_cql_test_config()).
+    db_config->enable_tablets.set(false);
 }
 
 cql_test_config::cql_test_config(const cql_test_config&) = default;

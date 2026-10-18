@@ -1,112 +1,182 @@
-# Scylla
+# Lexis
 
-[![Slack](https://img.shields.io/badge/slack-scylla-brightgreen.svg?logo=slack)](http://slack.scylladb.com)
-[![Twitter](https://img.shields.io/twitter/follow/ScyllaDB.svg?style=social&label=Follow)](https://twitter.com/intent/follow?screen_name=ScyllaDB)
+<img src="lexis-icon.svg" align="left" width="120" hspace="16" vspace="4" alt="Lexis">
 
-## What is Scylla?
+Lexis is a fork of ScyllaDB that replaces the Murmur3 partitioner with
+byte-ordered partitioning, built on tablets. (ScyllaDB removed its
+ByteOrderedPartitioner in 4.0.) The token of a partition is an
+order-preserving encoding of its partition key, so partitions are stored and
+distributed in key order, and prefix and range queries over partition keys are
+served as range reads instead of scattering across the cluster.
 
-Scylla is the real-time big data database that is API-compatible with Apache Cassandra and Amazon DynamoDB.
-Scylla embraces a shared-nothing approach that increases throughput and storage capacity to realize order-of-magnitude performance improvements and reduce hardware costs.
+<br clear="left">
 
-For more information, please see the [ScyllaDB web site].
+## The original constraint
 
-[ScyllaDB web site]: https://www.scylladb.com
+ByteOrderedPartitioner was deprecated primarily because ordered partitioning causes severe imbalance when multiple tables have different key distributions. The token boundaries that produce good distribution for one table's key space are wrong for another's. With a cluster-global token ring this is a genuine problem and the objection was reasonable at the time.
 
-## Build Prerequisites
+The secondary objection, hotspots from sequential writes, reinforced this position.
 
-Scylla is fairly fussy about its build environment, requiring very recent
-versions of the C++23 compiler and of many libraries to build. The document
-[HACKING.md](HACKING.md) includes detailed information on building and
-developing Scylla, but to get Scylla building quickly on (almost) any build
-machine, Scylla offers a [frozen toolchain](tools/toolchain/README.md),
-This is a pre-configured Docker image which includes recent versions of all
-the required compilers, libraries and build tools. Using the frozen toolchain
-allows you to avoid changing anything in your build machine to meet Scylla's
-requirements - you just need to meet the frozen toolchain's prerequisites
-(mostly, Docker or Podman being available).
+## Why tablets eliminate the constraint
 
-## Building Scylla
+Tablets give each table its own independent token-range-to-node-and-core mapping. There is no shared token ring across tables. The multi-table distribution problem that was the principal objection to ByteOrderedPartitioner does not exist in a tablets architecture by construction.
 
-Building Scylla with the frozen toolchain `dbuild` is as easy as:
+The hotspot objection is also addressed. A hot tablet gets split and migrated dynamically by the tablet load balancer. With a sufficiently high-entropy leading key component, writes distribute naturally across the keyspace, and any residual concentration is handled by the load balancer without schema changes. This is the mechanism working as designed.
 
-```bash
-$ git submodule update --init --force --recursive
-$ ./tools/toolchain/dbuild ./configure.py
-$ ./tools/toolchain/dbuild ninja build/release/scylla
-```
+## What ordered partitioning restores
 
-For further information, please see:
+Prefix scans over contiguous key ranges become possible: queries that currently require secondary indexes become efficient range reads routed to a bounded set of nodes and cores. Partial partition key queries, which under Murmur3 require a full cluster scatter, can be served by contiguous token range lookups. The expressiveness of the query model improves substantially without any sacrifice in distribution or performance.
 
-* [Developer documentation] for more information on building Scylla.
-* [Build documentation] on how to build Scylla binaries, tests, and packages.
-* [Docker image build documentation] for information on how to build Docker images.
+Secondary indexes and denormalized tables used to work around hash-distributed keys become unnecessary for range-ordered access patterns.
 
-[developer documentation]: HACKING.md
-[build documentation]: docs/dev/building.md
-[docker image build documentation]: dist/docker/debian/README.md
+## Prior art
 
-## Running Scylla
+This is the model Google Bigtable has offered since 2004: lexicographic ordering with per-table tablet-based distribution and dynamic splitting. The open source distributed database ecosystem deprecated the one feature that would have given it equivalent query semantics, based on a constraint that modern tablet architectures have already eliminated.
 
-To start Scylla server, run:
+## Why ScyllaDB
 
-```bash
-$ ./tools/toolchain/dbuild ./build/release/scylla --workdir tmp --smp 1 --developer-mode 1
-```
+ScyllaDB is uniquely positioned to address this. The per-core shared-nothing architecture means a tablet split results in work moving to a specific core on a specific node, so the granularity of load balancing is finer than anything else available. Combining per-table ordered tablets with this architecture would produce something that does not currently exist in any production open source distributed database: Bigtable's query model on modern hardware.
 
-This will start a Scylla node with one CPU core allocated to it and data files stored in the `tmp` directory.
-The `--developer-mode` is needed to disable the various checks Scylla performs at startup to ensure the machine is configured for maximum performance (not relevant on development workstations).
-Please note that you need to run Scylla with `dbuild` if you built it with the frozen toolchain.
+## Approach
 
-For more run options, run:
+Re-enable ordered partitioning as the partitioner for all tables in ScyllaDB's tablet architecture. The tablet load balancer handles distribution and its splitting heuristics evolve iteratively on top of this foundation.
 
-```bash
-$ ./tools/toolchain/dbuild ./build/release/scylla --help
-```
+## Motivation
 
-## Testing
+Hierarchical keys are a common pattern: document stores, file and object
+stores, and multi-tenant data all address records by a path. For example, a
+document store with each document at
+`/collection/{collectionId}/documents/{documentId}`, and the whole path as the
+partition key:
 
-[![Build with the latest Seastar](https://github.com/scylladb/scylladb/actions/workflows/seastar.yaml/badge.svg)](https://github.com/scylladb/scylladb/actions/workflows/seastar.yaml) [![Check Reproducible Build](https://github.com/scylladb/scylladb/actions/workflows/reproducible-build.yaml/badge.svg)](https://github.com/scylladb/scylladb/actions/workflows/reproducible-build.yaml) [![clang-nightly](https://github.com/scylladb/scylladb/actions/workflows/clang-nightly.yaml/badge.svg)](https://github.com/scylladb/scylladb/actions/workflows/clang-nightly.yaml)
+    CREATE TABLE docs (coll text, colid text, docid text, body text,
+                       PRIMARY KEY ((coll, colid, docid)));
 
-See [test.py manual](docs/dev/testing.md).
+     coll       | colid | docid | body
+    ------------+-------+-------+------
+     collection | c1    | d1    | x
+     collection | c1    | d2    | y
+     collection | c42   | d100  | a
+     collection | c42   | d101  | b
+     collection | c42   | d250  | c
+     users      | u7    | p1    | z
 
-## Scylla APIs and compatibility
-By default, Scylla is compatible with Apache Cassandra and its API - CQL.
-There is also support for the API of Amazon DynamoDB™,
-which needs to be enabled and configured in order to be used. For more
-information on how to enable the DynamoDB™ API in Scylla,
-and the current compatibility of this feature as well as Scylla-specific extensions, see
-[Alternator](docs/alternator/alternator.md) and
-[Getting started with Alternator](docs/alternator/getting-started.md).
+In ScyllaDB the token is a hash of the whole path, so only a complete path can
+be looked up efficiently. Listing a collection, paging through it, or listing
+collections all name just the start of a path, and ScyllaDB rejects them:
 
-## Documentation
+    Cannot execute this query as it might involve data filtering and thus may have unpredictable performance. If you want to execute this query despite the performance unpredictability, use ALLOW FILTERING
 
-Documentation can be found [here](docs/dev/README.md).
-Seastar documentation can be found [here](http://docs.seastar.io/master/index.html).
-User documentation can be found [here](https://docs.scylladb.com/).
+or, for a range on part of the path:
 
-## Training
+    Only EQ and IN relation are supported on the partition key (unless you use the token() function or allow filtering)
 
-Training material and online courses can be found at [Scylla University](https://university.scylladb.com/).
-The courses are free, self-paced and include hands-on examples. They cover a variety of topics including Scylla data modeling,
-administration, architecture, basic NoSQL concepts, using drivers for application development, Scylla setup, failover, compactions,
-multi-datacenters and how Scylla integrates with third-party applications.
+With ALLOW FILTERING they run as full scans of every node and return rows in
+hash order. The usual workarounds are a secondary index, a second table keyed
+for each access pattern, or moving docid into a clustering column, which puts
+a whole collection into one partition that cannot be split.
 
-## Contributing to Scylla
+In Lexis the token is the path itself, encoded so that byte order is path
+order. Documents that share a prefix are stored together, so each of these
+patterns becomes a read of one contiguous range of tablets, in path order,
+without ALLOW FILTERING:
 
-If you want to report a bug or submit a pull request or a patch, please read the [contribution guidelines].
+**All documents in one collection:**
 
-If you are a developer working on Scylla, please read the [developer guidelines].
+    SELECT * FROM docs WHERE coll = 'collection' AND colid = 'c42';
 
-[contribution guidelines]: CONTRIBUTING.md
-[developer guidelines]: HACKING.md
+     collection | c42   | d100  | a
+     collection | c42   | d101  | b
+     collection | c42   | d250  | c
 
-## Contact
+**Every collection under a path:**
 
-* The [community forum] and [Slack channel] are for users to discuss configuration, management, and operations of the ScyllaDB open source.
-* The [developers mailing list] is for developers and people interested in following the development of ScyllaDB to discuss technical topics.
+    SELECT * FROM docs WHERE coll = 'collection';
 
-[Community forum]: https://forum.scylladb.com/
+     collection | c1    | d1    | x
+     collection | c1    | d2    | y
+     collection | c42   | d100  | a
+     collection | c42   | d101  | b
+     collection | c42   | d250  | c
 
-[Slack channel]: http://slack.scylladb.com/
+**A page of documents, resuming after the last one seen:**
 
-[Developers mailing list]: https://groups.google.com/forum/#!forum/scylladb-dev
+    SELECT * FROM docs WHERE coll = 'collection' AND colid = 'c42'
+        AND docid > 'd100' LIMIT 2;
+
+     collection | c42   | d101  | b
+     collection | c42   | d250  | c
+
+**A range of collections:**
+
+    SELECT * FROM docs WHERE coll = 'collection' AND colid >= 'c1' AND colid < 'c2';
+
+     collection | c1    | d1    | x
+     collection | c1    | d2    | y
+
+**Several collections at once:**
+
+    SELECT * FROM docs WHERE coll = 'collection' AND colid IN ('c1', 'c42');
+
+     collection | c1    | d1    | x
+     collection | c1    | d2    | y
+     collection | c42   | d100  | a
+     collection | c42   | d101  | b
+     collection | c42   | d250  | c
+
+**Several collections at once, from a given document on:**
+
+    collection / c42 / *                 ok: all documents in c42
+    collection / c42 / d100..d200        ok: a range at the end
+    collection / {c1, c42} / d100..*     ok: two paths, each ending in a range
+    collection / * / d100                not ok: a gap in the middle, so the
+                                         matches are not next to each other
+
+    SELECT * FROM docs WHERE coll = 'collection' AND colid IN ('c1', 'c42')
+        AND docid > 'd1';
+
+     collection | c1    | d2    | y
+     collection | c42   | d100  | a
+     collection | c42   | d101  | b
+     collection | c42   | d250  | c
+
+d1 is excluded, and since 'd100' > 'd1' in text order, all of c42 is included.
+
+**The first rows of the whole table, in key order** (in ScyllaDB, LIMIT returns
+whichever rows hash first):
+
+    SELECT * FROM docs LIMIT 2;
+
+     collection | c1    | d1    | x
+     collection | c1    | d2    | y
+
+## Components
+
+| Repository | Docker image |
+|---|---|
+| [lexis](https://github.com/jk89/lexis) (this repository, the database) | `0x6a6f6e6e79/lexis` |
+| [lexis-python-driver](https://github.com/jk89/lexis-python-driver) | |
+| [lexis-rust-driver](https://github.com/jk89/lexis-rust-driver) | |
+| [lexis-cqlsh](https://github.com/jk89/lexis-cqlsh) | `0x6a6f6e6e79/lexis-cqlsh` |
+| [lexis-tools-java](https://github.com/jk89/lexis-tools-java) | `0x6a6f6e6e79/lexis-tools-java` |
+| [lexis-jmx](https://github.com/jk89/lexis-jmx) | `0x6a6f6e6e79/lexis-jmx` |
+
+Run a single node:
+
+    docker run --name lexis -d 0x6a6f6e6e79/lexis
+
+## Building
+
+Lexis builds with the standard ScyllaDB toolchain container. See
+[guide-build-and-test.md](guide-build-and-test.md); upstream's build
+documentation is in [HACKING.md](HACKING.md).
+
+## Base and licence
+
+Lexis is forked from `scylla-6.2.3` (commit `bff9ddde12`, 2025-01-19), the
+last tagged open-source ScyllaDB release, which is licensed under the GNU
+AGPL ([LICENSE.AGPL](LICENSE.AGPL)). From `branch-2025.1` onward, ScyllaDB is
+under the source-available ScyllaDB Software License. Lexis is licensed
+AGPL-3.0-or-later.
+
+The upstream ScyllaDB README is kept unchanged in [README_SCYLLA.md](README_SCYLLA.md).

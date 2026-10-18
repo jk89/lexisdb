@@ -671,11 +671,12 @@ db::config::config(std::shared_ptr<db::extensions> exts)
         "If not using vnodes, comment #num_tokens : 256 or set num_tokens : 1 and use initial_token. If you already have an existing cluster with one token per node and wish to migrate to vnodes, see Enabling virtual nodes on an existing production cluster.\n"
         "\n"
         ".. note:: If using DataStax Enterprise, the default setting of this property depends on the type of node and type of install.")
-    , partitioner(this, "partitioner", value_status::Used, "org.apache.cassandra.dht.Murmur3Partitioner",
-        "Distributes rows (by partition key) across all nodes in the cluster. At the moment, only Murmur3Partitioner is supported. For new clusters use the default partitioner.\n"
+    , partitioner(this, "partitioner", value_status::Used, "org.lexis.dht.LexisByteOrderedPartitioner",
+        "Distributes rows (by partition key) across all nodes in the cluster. Only LexisByteOrderedPartitioner is supported: "
+        "the token is an order-preserving encoding of the partition key.\n"
         "\n"
         "Related information: Partitioners",
-        {"org.apache.cassandra.dht.Murmur3Partitioner"})
+        {"org.lexis.dht.LexisByteOrderedPartitioner"})
     , storage_port(this, "storage_port", value_status::Used, 7000,
         "The port for inter-node communication.")
     /**
@@ -1159,7 +1160,8 @@ db::config::config(std::shared_ptr<db::extensions> exts)
     , service_levels_interval(this, "service_levels_interval_ms", liveness::LiveUpdate, value_status::Used, 10000, "Controls how often service levels module polls configuration table")
     , error_injections_at_startup(this, "error_injections_at_startup", error_injection_value_status, {}, "List of error injections that should be enabled on startup.")
     , topology_barrier_stall_detector_threshold_seconds(this, "topology_barrier_stall_detector_threshold_seconds", value_status::Used, 2, "Report sites blocking topology barrier if it takes longer than this.")
-    , enable_tablets(this, "enable_tablets", value_status::Used, false, "Enable tablets for newly created keyspaces")
+    , enable_tablets(this, "enable_tablets", value_status::Used, true, "Enable tablets for newly created keyspaces. "
+        "Ordered partitioning relies on per-table tablet boundaries; keyspaces without tablets share one token ring.")
     , default_log_level(this, "default_log_level", value_status::Used, seastar::log_level::info, "Default log level for log messages")
     , logger_log_level(this, "logger_log_level", value_status::Used, {}, "Map of logger name to log level. Valid log levels are 'error', 'warn', 'info', 'debug' and 'trace'")
     , log_to_stdout(this, "log_to_stdout", value_status::Used, true, "Send log output to stdout")

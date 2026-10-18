@@ -788,8 +788,8 @@ row_cache::make_reader_opt(schema_ptr s,
         auto mr = _read_section(_tracker.region(), [&] () -> mutation_reader_opt {
             dht::ring_position_comparator cmp(*_schema);
             auto&& pos = range.start()->value();
-            partitions_type::bound_hint hint;
-            auto i = _partitions.lower_bound(pos, cmp, hint);
+            bound_hint hint;
+            auto i = _partitions.lower_bound(pos, hint.match, cmp);
             if (hint.match) {
                 cache_entry& e = *i;
                 upgrade_entry(e);
@@ -836,8 +836,8 @@ mutation_reader row_cache::make_nonpopulating_reader(schema_ptr schema, reader_p
     return _read_section(_tracker.region(), [&] () -> mutation_reader {
         dht::ring_position_comparator cmp(*_schema);
         auto&& pos = range.start()->value();
-        partitions_type::bound_hint hint;
-        auto i = _partitions.lower_bound(pos, cmp, hint);
+        bound_hint hint;
+        auto i = _partitions.lower_bound(pos, hint.match, cmp);
         if (hint.match) {
             cache_entry& e = *i;
             upgrade_entry(e);
@@ -867,6 +867,7 @@ void row_cache::clear_on_destruction() noexcept {
                 _tracker.on_partition_erase();
             }
             p->evict(_tracker);
+            current_allocator().destroy(p);
         });
     });
 }
@@ -880,13 +881,14 @@ void row_cache::clear_now() noexcept {
         auto it = _partitions.erase_and_dispose(_partitions.begin(), partitions_end(), [this] (cache_entry* p) noexcept {
             _tracker.on_partition_erase();
             p->evict(_tracker);
+            current_allocator().destroy(p);
         });
         _tracker.clear_continuity(*it);
     });
 }
 
 template<typename CreateEntry, typename VisitEntry>
-requires requires(CreateEntry create, VisitEntry visit, row_cache::partitions_type::iterator it, row_cache::partitions_type::bound_hint hint) {
+requires requires(CreateEntry create, VisitEntry visit, row_cache::partitions_type::iterator it, row_cache::bound_hint hint) {
     { create(it, hint) } -> std::same_as<row_cache::partitions_type::iterator>;
     { visit(it) } -> std::same_as<void>;
 }
@@ -894,9 +896,9 @@ cache_entry& row_cache::do_find_or_create_entry(const dht::decorated_key& key,
     const previous_entry_pointer* previous, CreateEntry&& create_entry, VisitEntry&& visit_entry)
 {
     return with_allocator(_tracker.allocator(), [&] () -> cache_entry& {
-        partitions_type::bound_hint hint;
+        bound_hint hint;
         dht::ring_position_comparator cmp(*_schema);
-        auto i = _partitions.lower_bound(key, cmp, hint);
+        auto i = _partitions.lower_bound(key, hint.match, cmp);
         if (i == _partitions.end() || !hint.match) {
             i = create_entry(i, hint);
         } else {
@@ -920,11 +922,10 @@ cache_entry& row_cache::do_find_or_create_entry(const dht::decorated_key& key,
 }
 
 cache_entry& row_cache::find_or_create_incomplete(const partition_start& ps, row_cache::phase_type phase, const previous_entry_pointer* previous) {
-    return do_find_or_create_entry(ps.key(), previous, [&] (auto i, const partitions_type::bound_hint& hint) { // create
+    return do_find_or_create_entry(ps.key(), previous, [&] (auto i, const bound_hint& hint) { // create
         // Create an fully discontinuous, except for the partition tombstone, entry
         mutation_partition mp = mutation_partition::make_incomplete(*_schema, ps.partition_tombstone());
-        partitions_type::iterator entry = _partitions.emplace_before(i, ps.key().token().raw(), hint,
-                _schema, ps.key(), std::move(mp));
+        partitions_type::iterator entry = emplace_entry_before(i, _schema, ps.key(), std::move(mp));
         _tracker.insert(*entry);
         return entry;
     }, [&] (auto i) { // visit
@@ -936,11 +937,10 @@ cache_entry& row_cache::find_or_create_incomplete(const partition_start& ps, row
 }
 
 cache_entry& row_cache::find_or_create_missing(const dht::decorated_key& key) {
-    return do_find_or_create_entry(key, nullptr, [&] (auto i, const partitions_type::bound_hint& hint) {
+    return do_find_or_create_entry(key, nullptr, [&] (auto i, const bound_hint& hint) {
         mutation_partition mp(*_schema);
         bool cont = i->continuous();
-        partitions_type::iterator entry = _partitions.emplace_before(i, key.token().raw(), hint,
-                _schema, key, std::move(mp));
+        partitions_type::iterator entry = emplace_entry_before(i, _schema, key, std::move(mp));
         _tracker.insert(*entry);
         entry->set_continuous(cont);
         return entry;
@@ -951,9 +951,8 @@ cache_entry& row_cache::find_or_create_missing(const dht::decorated_key& key) {
 
 void row_cache::populate(const mutation& m, const previous_entry_pointer* previous) {
   _populate_section(_tracker.region(), [&] {
-    do_find_or_create_entry(m.decorated_key(), previous, [&] (auto i, const partitions_type::bound_hint& hint) {
-        partitions_type::iterator entry = _partitions.emplace_before(i, m.decorated_key().token().raw(), hint,
-                m.schema(), m.decorated_key(), m.partition());
+    do_find_or_create_entry(m.decorated_key(), previous, [&] (auto i, const bound_hint& hint) {
+        partitions_type::iterator entry = emplace_entry_before(i, m.schema(), m.decorated_key(), m.partition());
         _tracker.insert(*entry);
         entry->set_continuous(i->continuous());
         upgrade_entry(*entry);
@@ -965,7 +964,7 @@ void row_cache::populate(const mutation& m, const previous_entry_pointer* previo
 }
 
 cache_entry& row_cache::lookup(const dht::decorated_key& key) {
-    return do_find_or_create_entry(key, nullptr, [&] (auto i, const partitions_type::bound_hint& hint) {
+    return do_find_or_create_entry(key, nullptr, [&] (auto i, const bound_hint& hint) {
         throw std::runtime_error(format("cache doesn't contain entry for {}", key));
         return i;
     }, [&] (auto i) {
@@ -1004,6 +1003,7 @@ void row_cache::invalidate_sync(replica::memtable& m) noexcept {
                 blow_cache = true;
             }
             m.evict_entry(*entry, _tracker.memtable_cleaner());
+            current_allocator().destroy(entry);
         });
         if (blow_cache) {
             // We failed to invalidate the key. Recover using clear_now(), which doesn't throw.
@@ -1064,8 +1064,8 @@ future<> row_cache::do_update(external_updater eu, replica::memtable& m, Updater
                                 _update_section(_tracker.region(), [&] {
                                     replica::memtable_entry& mem_e = *m.partitions.begin();
                                     size_entry = mem_e.size_in_allocator_without_rows(_tracker.allocator());
-                                    partitions_type::bound_hint hint;
-                                    auto cache_i = _partitions.lower_bound(mem_e.key(), cmp, hint);
+                                    bound_hint hint;
+                                    auto cache_i = _partitions.lower_bound(mem_e.key(), hint.match, cmp);
                                     update = updater(_update_section, cache_i, mem_e, is_present, real_dirty_acc, hint, preempt_src);
                                 });
                             }
@@ -1079,8 +1079,9 @@ future<> row_cache::do_update(external_updater eu, replica::memtable& m, Updater
                             real_dirty_acc.unpin_memory(size_entry);
                             _update_section(_tracker.region(), [&] {
                                 auto i = m.partitions.begin();
-                                i.erase_and_dispose(dht::raw_token_less_comparator{}, [&] (replica::memtable_entry* e) noexcept {
+                                m.partitions.erase_and_dispose(i, [&] (replica::memtable_entry* e) noexcept {
                                     m.evict_entry(*e, _tracker.memtable_cleaner());
+                                    current_allocator().destroy(e);
                                 });
                             });
                             ++partition_count;
@@ -1110,7 +1111,7 @@ future<> row_cache::do_update(external_updater eu, replica::memtable& m, Updater
 future<> row_cache::update(external_updater eu, replica::memtable& m, preemption_source& preempt_src) {
     return do_update(std::move(eu), m, [this] (logalloc::allocating_section& alloc,
             row_cache::partitions_type::iterator cache_i, replica::memtable_entry& mem_e, partition_presence_checker& is_present,
-            real_dirty_memory_accounter& acc, const partitions_type::bound_hint& hint, preemption_source& preempt_src) mutable {
+            real_dirty_memory_accounter& acc, const bound_hint& hint, preemption_source& preempt_src) mutable {
         // If cache doesn't contain the entry we cannot insert it because the mutation may be incomplete.
         // FIXME: keep a bitmap indicating which sstables we do cover, so we don't have to
         //        search it.
@@ -1126,8 +1127,7 @@ future<> row_cache::update(external_updater eu, replica::memtable& m, preemption
                    || with_allocator(standard_allocator(), [&] { return is_present(mem_e.key()); })
                       == partition_presence_checker_result::definitely_doesnt_exist) {
             // Partition is absent in underlying. First, insert a neutral partition entry.
-            partitions_type::iterator entry = _partitions.emplace_before(cache_i, mem_e.key().token().raw(), hint,
-                cache_entry::evictable_tag(), _schema, dht::decorated_key(mem_e.key()),
+            partitions_type::iterator entry = emplace_entry_before(cache_i, cache_entry::evictable_tag(), _schema, dht::decorated_key(mem_e.key()),
                 partition_entry::make_evictable(*_schema, mutation_partition(*_schema)));
             entry->set_continuous(cache_i->continuous());
             _tracker.insert(*entry);
@@ -1143,7 +1143,7 @@ future<> row_cache::update(external_updater eu, replica::memtable& m, preemption
 future<> row_cache::update_invalidating(external_updater eu, replica::memtable& m) {
     return do_update(std::move(eu), m, [this] (logalloc::allocating_section& alloc,
         row_cache::partitions_type::iterator cache_i, replica::memtable_entry& mem_e, partition_presence_checker& is_present,
-        real_dirty_memory_accounter& acc, const partitions_type::bound_hint&, preemption_source&)
+        real_dirty_memory_accounter& acc, const bound_hint&, preemption_source&)
     {
         if (cache_i != partitions_end() && cache_i->key().equal(*_schema, mem_e.key())) {
             // FIXME: Invalidate only affected row ranges.
@@ -1197,10 +1197,11 @@ void row_cache::invalidate_locked(const dht::decorated_key& dk) {
     if (pos == partitions_end() || !pos->key().equal(*_schema, dk)) {
         _tracker.clear_continuity(*pos);
     } else {
-        auto it = pos.erase_and_dispose(dht::raw_token_less_comparator{},
+        auto it = _partitions.erase_and_dispose(pos,
             [this](cache_entry* p) mutable noexcept {
                 _tracker.on_partition_erase();
                 p->evict(_tracker);
+                current_allocator().destroy(p);
             });
         _tracker.clear_continuity(*it);
     }
@@ -1234,10 +1235,11 @@ future<> row_cache::invalidate(external_updater eu, dht::partition_range_vector&
                         auto end = _partitions.lower_bound(dht::ring_position_view::for_range_end(range), cmp);
                         return with_allocator(_tracker.allocator(), [&] {
                             while (it != end) {
-                                it = it.erase_and_dispose(dht::raw_token_less_comparator{},
+                                it = _partitions.erase_and_dispose(it,
                                     [&] (cache_entry* p) mutable noexcept {
                                         _tracker.on_partition_erase();
                                         p->evict(_tracker);
+                                        current_allocator().destroy(p);
                                     });
                                 // it != end is necessary for correctness. We cannot set _prev_snapshot_pos to end->position()
                                 // because after resuming something may be inserted before "end" which falls into the next range.
@@ -1274,16 +1276,13 @@ void row_cache::evict() {
 row_cache::row_cache(schema_ptr s, snapshot_source src, cache_tracker& tracker, is_continuous cont)
     : _tracker(tracker)
     , _schema(std::move(s))
-    , _partitions(dht::raw_token_less_comparator{})
     , _underlying(src())
     , _snapshot_source(std::move(src))
 {
   try {
     with_allocator(_tracker.allocator(), [this, cont] {
-        cache_entry entry(cache_entry::dummy_entry_tag{});
-        entry.set_continuous(bool(cont));
-        auto raw_token = entry.position().token().raw();
-        _partitions.insert(raw_token, std::move(entry), dht::ring_position_comparator{*_schema});
+        auto entry = emplace_entry_before(_partitions.end(), cache_entry::dummy_entry_tag{});
+        entry->set_continuous(bool(cont));
     });
   } catch (...) {
     // The code above might have allocated something in _partitions.
@@ -1295,7 +1294,8 @@ row_cache::row_cache(schema_ptr s, snapshot_source src, cache_tracker& tracker, 
 }
 
 cache_entry::cache_entry(cache_entry&& o) noexcept
-    : _key(std::move(o._key))
+    : _link(std::move(o._link))
+    , _key(std::move(o._key))
     , _pe(std::move(o._pe))
     , _flags(o._flags)
 {
@@ -1317,7 +1317,8 @@ void cache_entry::on_evicted(cache_tracker& tracker) noexcept {
     std::next(it)->set_continuous(false);
     evict(tracker);
     tracker.on_partition_eviction();
-    it.erase(dht::raw_token_less_comparator{});
+    row_cache::partitions_type::key_grabber kg(it);
+    kg.release(current_deleter<cache_entry>());
 }
 
 static

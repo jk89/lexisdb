@@ -281,18 +281,15 @@ SEASTAR_TEST_CASE(test_partition_key_filtering_unrestricted_part) {
 // This verifies part of issue #2367. See also test_clustering_key_in_restrictions.
 SEASTAR_TEST_CASE(test_partition_key_filtering_with_slice) {
     return do_with_cql_env_thread([] (auto& e) {
-        // Although the test below tests that slices are allowed in MV's
-        // SELECT, let's first verify that these slices are still *not*
-        // allowed in ordinary SELECT queries:
+        // Under ordered partitioning (Lexis) a slice of the partition key is
+        // a contiguous token range, so ordinary SELECTs allow it too (in
+        // Scylla with hash partitioning they don't):
 
         e.execute_cql("create table cf (a int, b int, primary key (a))").get();
-        try {
-            e.execute_cql("select * from cf where a > 0").get();
-            BOOST_FAIL("slice query of partition key");
-        } catch (exceptions::invalid_request_exception&) {
-            // Expecting "Only EQ and IN relation are supported on the
-            // partition key (unless you use the token() function)"
-        }
+        e.execute_cql("insert into cf (a, b) values (0, 0)").get();
+        e.execute_cql("insert into cf (a, b) values (1, 1)").get();
+        assert_that(e.execute_cql("select * from cf where a > 0").get()).is_rows().with_rows({
+                {{int32_type->decompose(1)}, {int32_type->decompose(1)}}});
         e.execute_cql("drop table cf").get();
 
         e.execute_cql("create table cf (a int, b int, c int, primary key (a, b, c))").get();

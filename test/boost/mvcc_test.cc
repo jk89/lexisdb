@@ -529,7 +529,7 @@ void evict_with_consistency_check(mvcc_container& ms, mvcc_partition& e, const m
 }
 
 static void reverse(schema_ptr s, mutation_partition& m) {
-    auto dk = dht::decorated_key(dht::token(0), partition_key::from_bytes(bytes()));
+    auto dk = dht::decorated_key(dht::token::from_int64(0), partition_key::from_bytes(bytes()));
     m = std::move(reverse(mutation(s, std::move(dk), std::move(m))).partition());
 }
 

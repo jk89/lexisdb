@@ -315,9 +315,10 @@ batch_size_fail_threshold_in_kb: 1024
 # reloading all data, so when upgrading you should set this to the
 # same partitioner you were already using.
 #
-# Murmur3Partitioner is currently the only supported partitioner,
+# LexisByteOrderedPartitioner is the only supported partitioner: the
+# token is an order-preserving encoding of the partition key.
 #
-partitioner: org.apache.cassandra.dht.Murmur3Partitioner
+partitioner: org.lexis.dht.LexisByteOrderedPartitioner
 
 # Total space to use for commitlogs.
 #

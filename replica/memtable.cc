@@ -129,7 +129,6 @@ memtable::memtable(schema_ptr schema, dirty_memory_manager& dmm,
         , _memtable_list(memtable_list)
         , _schema(std::move(schema))
         , _table_shared_data(table_shared_data)
-        , partitions(dht::raw_token_less_comparator{})
         , _table_stats(table_stats) {
     logalloc::region::listen(&dmm.region_group());
 }
@@ -163,6 +162,7 @@ void memtable::clear() noexcept {
     with_allocator(allocator(), [this] {
         partitions.clear_and_dispose([this] (memtable_entry* e) noexcept {
             evict_entry(*e, _cleaner);
+            current_allocator().destroy(e);
         });
     });
     remove_flushed_memory(dirty_before - dirty_size());
@@ -182,7 +182,7 @@ future<> memtable::clear_gently() noexcept {
                         if (p.begin()->clear_gently() == stop_iteration::no) {
                             break;
                         }
-                        p.begin().erase(dht::raw_token_less_comparator{});
+                        p.erase_and_dispose(p.begin(), current_deleter<memtable_entry>());
                         if (need_preempt()) {
                             break;
                         }
@@ -197,7 +197,7 @@ future<> memtable::clear_gently() noexcept {
              * with the last erase. If anything gets freed in destructor,
              * it will be unaccounted from wrong allocator, so handle it
              */
-            with_allocator(alloc, [&p] { p.clear(); });
+            with_allocator(alloc, [&p] { p.clear_and_dispose(current_deleter<memtable_entry>()); });
         });
         auto f = t->join();
         return f.then([t = std::move(t)] {});
@@ -228,18 +228,16 @@ partition_entry&
 memtable::find_or_create_partition(const dht::decorated_key& key) {
     SCYLLA_ASSERT(!reclaiming_enabled());
 
-    // call lower_bound so we have a hint for the insert, just in case.
-    partitions_type::bound_hint hint;
-    auto i = partitions.lower_bound(key, dht::ring_position_comparator(*_schema), hint);
-    if (i == partitions.end() || !hint.match) {
-        partitions_type::iterator entry = partitions.emplace_before(i,
-                key.token().raw(), hint,
-                _schema, dht::decorated_key(key), mutation_partition(*_schema));
+    bool match = false;
+    auto i = partitions.lower_bound(key, match, dht::ring_position_comparator(*_schema));
+    if (!match) {
+        auto e = alloc_strategy_unique_ptr<memtable_entry>(
+                current_allocator().construct<memtable_entry>(_schema, dht::decorated_key(key), mutation_partition(*_schema)));
+        // Entries are linked intrusively, so inserting does not move other
+        // entries or invalidate iterators to them.
+        partitions_type::iterator entry = partitions.insert_before(i, std::move(e));
         ++nr_partitions;
         ++_table_stats.memtable_partition_insertions;
-        if (!hint.emplace_keeps_iterators()) {
-            current_allocator().invalidate_references();
-        }
         return entry->partition();
     } else {
         ++_table_stats.memtable_partition_hits;
@@ -821,9 +819,9 @@ mutation_source memtable::as_data_source() {
 }
 
 memtable_entry::memtable_entry(memtable_entry&& o) noexcept
-    : _key(std::move(o._key))
+    : _link(std::move(o._link))
+    , _key(std::move(o._key))
     , _pe(std::move(o._pe))
-    , _flags(o._flags)
 { }
 
 stop_iteration memtable_entry::clear_gently() noexcept {
@@ -856,7 +854,7 @@ void memtable::set_schema(schema_ptr new_schema) noexcept {
 }
 
 size_t memtable_entry::object_memory_size(allocation_strategy& allocator) {
-    return memtable::partitions_type::estimated_object_memory_size_in_allocator(allocator, this);
+    return allocator.object_memory_size_in_allocator(this);
 }
 
 }

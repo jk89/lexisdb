@@ -19,6 +19,7 @@
 #include "mutation/mutation_fragment.hh"
 #include "mutation_writer/multishard_writer.hh"
 #include "dht/i_partitioner.hh"
+#include "dht/ordered_partitioner.hh"
 #include "dht/sharder.hh"
 #include "utils/assert.hh"
 #include "utils/xx_hasher.hh"
@@ -1530,12 +1531,9 @@ public:
             co_return;
         }
         stats().rpc_call_nr++;
-        // Even though remote partitioner name is ignored in the current version of
-        // repair, we still have to send something to keep compatibility with nodes
-        // that run older versions. This will make it possible to run mixed cluster.
-        // Murmur3 is appropriate because that's the only supported partitioner at
-        // the time this change is introduced.
-        sstring remote_partitioner_name = "org.apache.cassandra.dht.Murmur3Partitioner";
+        // The remote partitioner name is ignored by repair; it is only sent to
+        // keep the RPC format. LexisByteOrderedPartitioner is the only supported partitioner.
+        sstring remote_partitioner_name = dht::ordered_partitioner::classname;
         rpc::optional<repair_row_level_start_response> resp =
             co_await _messaging.send_repair_row_level_start(msg_addr(remote_node),
                 _repair_meta_id, ks_name, cf_name, std::move(range), _algo, _max_row_buf_size, _seed,
@@ -2234,9 +2232,9 @@ future<repair_update_system_table_response> repair_service::repair_update_system
     ent.ks = req.keyspace_name;
     ent.cf = req.table_name;
     auto range_start = req.range.start() ? req.range.start()->value() : dht::minimum_token();
-    ent.range_start = dht::token::to_int64(range_start);
+    ent.range_start = range_start;
     auto range_end = req.range.end() ? req.range.end()->value() : dht::maximum_token();
-    ent.range_end = dht::token::to_int64(range_end);
+    ent.range_end = range_end;
     co_await _sys_ks.local().update_repair_history(std::move(ent));
     co_return repair_update_system_table_response();
 }
@@ -3243,8 +3241,8 @@ future<> repair_service::load_history() {
                 table->schema()->ks_name(), table->schema()->cf_name(), table_uuid);
         co_await _sys_ks.local().get_repair_history(table_uuid, [this] (const auto& entry) -> future<> {
             get_repair_module().check_in_shutdown();
-            auto start = entry.range_start == std::numeric_limits<int64_t>::min() ? dht::minimum_token() : dht::token::from_int64(entry.range_start);
-            auto end = entry.range_end == std::numeric_limits<int64_t>::min() ? dht::maximum_token() : dht::token::from_int64(entry.range_end);
+            const auto& start = entry.range_start;
+            const auto& end = entry.range_end;
             auto range = dht::token_range(dht::token_range::bound(start, false), dht::token_range::bound(end, true));
             auto repair_time = to_gc_clock(entry.ts);
             rlogger.debug("Loading repair history for keyspace={}, table={}, table_uuid={}, repair_time={}, range={}",

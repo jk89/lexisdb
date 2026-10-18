@@ -36,6 +36,12 @@
 
 #include <boost/range/algorithm/sort.hpp>
 #include "readers/from_fragments_v2.hh"
+#include "test/lib/murmur3_partitioner.hh"
+
+// The sstable fixtures in test/resource/sstables were written with the Murmur3
+// partitioner; read them with it (see test/lib/murmur3_partitioner.hh).
+using tests::murmur3_partitioner_by_default;
+BOOST_TEST_GLOBAL_FIXTURE(murmur3_partitioner_by_default);
 
 using namespace sstables;
 using namespace std::chrono_literals;
@@ -336,14 +342,14 @@ SEASTAR_TEST_CASE(read_range) {
 SEASTAR_TEST_CASE(read_partial_range) {
     return test_env::do_with_async([] (test_env& env) {
         std::vector<bytes> expected = { to_bytes("finna"), to_bytes("isak") };
-        test_range_reads(env, uncompressed_schema()->get_partitioner().get_token(key_view(bytes_view(expected.back()))), dht::maximum_token(), expected);
+        test_range_reads(env, uncompressed_schema()->get_partitioner().get_token(*uncompressed_schema(), key_view(bytes_view(expected.back()))), dht::maximum_token(), expected);
     });
 }
 
 SEASTAR_TEST_CASE(read_partial_range_2) {
     return test_env::do_with_async([] (test_env& env) {
         std::vector<bytes> expected = { to_bytes("gustaf"), to_bytes("vinna") };
-        test_range_reads(env, dht::minimum_token(), uncompressed_schema()->get_partitioner().get_token(key_view(bytes_view(expected.front()))), expected);
+        test_range_reads(env, dht::minimum_token(), uncompressed_schema()->get_partitioner().get_token(*uncompressed_schema(), key_view(bytes_view(expected.front()))), expected);
     });
 }
 

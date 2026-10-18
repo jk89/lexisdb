@@ -857,11 +857,12 @@ SEASTAR_THREAD_TEST_CASE(token) {
         // Keeping them because (absent collisions) they complete code coverage, guarding against
         // hard-to-trigger bugs.
         require_rows(e, "select p from t where token(p,q) = token(1,11) and token(p,q) = token(2,12)", {});
-        require_rows(e, "select p from t where token(p,q) <= token(1,11) and token(p,q) = token(2,12)", {{I(2)}});
+        // Ordered tokens: token(2,12) > token(1,11), so nothing matches.
+        require_rows(e, "select p from t where token(p,q) <= token(1,11) and token(p,q) = token(2,12)", {});
 
         require_rows(e, "select p from t where token(p,q) > token(9,9) and token(p,q) < token(9,9)", {});
-        const auto min_bounds = format("select p from t where token(p,q) > {:d} and token(p,q) < {:d}",
-               std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::min());
+        // An empty blob is the minimum token; `< 0x` means no upper bound.
+        const auto min_bounds = sstring("select p from t where token(p,q) > 0x and token(p,q) < 0x");
         require_rows(e, min_bounds, {{I(1)}, {I(2)}, {I(3)}});
         require_rows(e, "select p from t where token(p,q) <= token(1,11) and r<102 allow filtering",
                          {{I(1), I(101)}});

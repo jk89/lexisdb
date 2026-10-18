@@ -2709,10 +2709,8 @@ void for_each_schema_change(std::function<void(schema_ptr, const std::vector<mut
         s.alter_clustering_column_type(format("ck{}", i), bytes_type);
         schemas.emplace_back(s.build());
     }
-    for (auto i = 1; i <= 3; i++) {
-        s.alter_partition_column_type(format("pk{}", i), bytes_type);
-        schemas.emplace_back(s.build());
-    }
+    // No partition key type changes: under ordered partitioning the types
+    // determine the tokens, and ALTER TABLE rejects such changes.
     test_mutated_schemas();
 
     s = original_s;

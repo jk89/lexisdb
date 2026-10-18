@@ -88,12 +88,12 @@ def testIndexOnCollections(cql, test_keyspace):
         assert_empty(execute(cql, table, "SELECT k, v FROM %s WHERE s CONTAINS 'a'"))
 
         # maps
-        assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 1"), [1, 0], [0, 0], [0, 1])
+        assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 1"), [0, 0], [0, 1], [1, 0])
         assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS 1"), [0, 0], [0, 1])
         assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 4"), [1, 0])
         assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE m CONTAINS 5"))
 
-        assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'b'"), [1, 0], [0, 0], [0, 1])
+        assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'b'"), [0, 0], [0, 1], [1, 0])
         assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS KEY 'b'"), [0, 0], [0, 1])
         assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'c'"), [1, 0])
         assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE m CONTAINS KEY 'd'"))
@@ -101,7 +101,7 @@ def testIndexOnCollections(cql, test_keyspace):
         # update maps.
         execute(cql, table, "UPDATE %s SET m['c'] = 5 WHERE k = 0")
         assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 5"), [0, 0], [0, 1])
-        assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'c'"), [1, 0], [0, 0], [0, 1])
+        assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'c'"), [0, 0], [0, 1], [1, 0])
         execute(cql, table, "DELETE m['a'] FROM %s WHERE k = 0")
         assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE m CONTAINS KEY 'a'"))
 

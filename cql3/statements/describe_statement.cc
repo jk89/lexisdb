@@ -558,7 +558,8 @@ future<bytes_opt> cluster_describe_statement::range_ownership(const service::sto
 
     auto ranges = co_await proxy.describe_ring(ks);
     boost::sort(ranges, [] (const dht::token_range_endpoints& l, const dht::token_range_endpoints& r) {
-        return std::stol(l._start_token) < std::stol(r._start_token);
+        // Token strings are hex-encoded ordered tokens; compare them as tokens.
+        return dht::token::from_sstring(l._start_token) < dht::token::from_sstring(r._start_token);
     });
 
     auto ring_ranges = boost::copy_range<std::vector<std::pair<data_value, data_value>>>(ranges | boost::adaptors::transformed([list_type = std::move(list_type)] (auto& range) {

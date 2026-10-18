@@ -98,16 +98,6 @@ static void ensure_tablets_disabled(const http_context& ctx, const sstring& ks_n
     }
 }
 
-static bool any_of_keyspaces_use_tablets(const http_context& ctx) {
-    auto& db = ctx.db.local();
-    auto uses_tablets = [&db](const auto& ks_name) {
-        return db.find_keyspace(ks_name).uses_tablets();
-    };
-
-    auto keyspaces = db.get_all_keyspaces();
-    return std::any_of(std::begin(keyspaces), std::end(keyspaces), uses_tablets);
-}
-
 locator::host_id validate_host_id(const sstring& param) {
     auto hoep = locator::host_id_or_endpoint(param, locator::host_id_or_endpoint::param_type::host_id);
     return hoep.id();
@@ -1305,11 +1295,12 @@ void set_storage_service(http_context& ctx, routes& r, sharded<service::storage_
         return make_ready_future<json::json_return_type>(0);
     });
 
-    ss::get_ownership.set(r, [&ctx, &ss] (std::unique_ptr<http::request> req) {
-        if (any_of_keyspaces_use_tablets(ctx)) {
-            throw httpd::bad_param_exception("storage_service/ownership cannot be used when a keyspace uses tablets");
-        }
-
+    ss::get_ownership.set(r, [&ss] (std::unique_ptr<http::request> req) {
+        // This is ownership of the node token ring, which system keyspaces still
+        // use. Lexis enables tablets by default, so refusing whenever a keyspace
+        // uses tablets (as upstream 6.2 does) would make `nodetool status` fail
+        // on every cluster. Per-keyspace ownership of tablet keyspaces is still
+        // refused below.
         return ss.local().get_ownership().then([] (auto&& ownership) {
             std::vector<storage_service_json::mapper> res;
             return make_ready_future<json::json_return_type>(map_to_key_value(ownership, res));
@@ -1496,7 +1487,7 @@ void set_storage_service(http_context& ctx, routes& r, sharded<service::storage_
         shard_id src_shard_id = validate_int(req->get_query_param("src_shard"));
         auto dst_host_id = validate_host_id(req->get_query_param("dst_host"));
         shard_id dst_shard_id = validate_int(req->get_query_param("dst_shard"));
-        auto token = dht::token::from_int64(validate_int(req->get_query_param("token")));
+        auto token = dht::token::from_sstring(req->get_query_param("token"));
         auto ks = req->get_query_param("ks");
         auto table = req->get_query_param("table");
         validate_table(ctx, ks, table);
@@ -1515,7 +1506,7 @@ void set_storage_service(http_context& ctx, routes& r, sharded<service::storage_
     ss::add_tablet_replica.set(r, [&ctx, &ss] (std::unique_ptr<http::request> req) -> future<json_return_type> {
         auto dst_host_id = validate_host_id(req->get_query_param("dst_host"));
         shard_id dst_shard_id = validate_int(req->get_query_param("dst_shard"));
-        auto token = dht::token::from_int64(validate_int(req->get_query_param("token")));
+        auto token = dht::token::from_sstring(req->get_query_param("token"));
         auto ks = req->get_query_param("ks");
         auto table = req->get_query_param("table");
         auto table_id = ctx.db.local().find_column_family(ks, table).schema()->id();
@@ -1532,7 +1523,7 @@ void set_storage_service(http_context& ctx, routes& r, sharded<service::storage_
     ss::del_tablet_replica.set(r, [&ctx, &ss] (std::unique_ptr<http::request> req) -> future<json_return_type> {
         auto dst_host_id = validate_host_id(req->get_query_param("host"));
         shard_id dst_shard_id = validate_int(req->get_query_param("shard"));
-        auto token = dht::token::from_int64(validate_int(req->get_query_param("token")));
+        auto token = dht::token::from_sstring(req->get_query_param("token"));
         auto ks = req->get_query_param("ks");
         auto table = req->get_query_param("table");
         auto table_id = ctx.db.local().find_column_family(ks, table).schema()->id();

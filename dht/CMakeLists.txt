@@ -5,7 +5,8 @@ target_sources(scylla_dht
   PRIVATE
     boot_strapper.cc
     i_partitioner.cc
-    murmur3_partitioner.cc
+    ordered_partitioner.cc
+    ordered_encoding.cc
     range_streamer.cc
     token.cc)
 target_include_directories(scylla_dht

@@ -281,10 +281,12 @@ BOOST_AUTO_TEST_CASE(test_range_interval_map) {
     using token = dht::token;
     boost::icl::interval_map<token, value_type> mymap;
 
-    mymap += get_item("1", "5", "A");
-    mymap += get_item("5", "8", "B");
-    mymap += get_item("1", "3", "C");
-    mymap += get_item("3", "8", "D");
+    // Tokens are hex strings of bytes; single-byte tokens order like the digits.
+
+    mymap += get_item("01", "05", "A");
+    mymap += get_item("05", "08", "B");
+    mymap += get_item("01", "03", "C");
+    mymap += get_item("03", "08", "D");
 
     std::cout << "my map: " << "\n";
     for (auto x : mymap) {
@@ -308,16 +310,16 @@ BOOST_AUTO_TEST_CASE(test_range_interval_map) {
         }
     };
 
-    BOOST_REQUIRE(search_item("0") == false);
-    BOOST_REQUIRE(search_item("1") == false);
-    BOOST_REQUIRE(search_item("2") == true);
-    BOOST_REQUIRE(search_item("3") == true);
-    BOOST_REQUIRE(search_item("4") == true);
-    BOOST_REQUIRE(search_item("5") == true);
-    BOOST_REQUIRE(search_item("6") == true);
-    BOOST_REQUIRE(search_item("7") == true);
-    BOOST_REQUIRE(search_item("8") == true);
-    BOOST_REQUIRE(search_item("9") == false);
+    BOOST_REQUIRE(search_item("00") == false);
+    BOOST_REQUIRE(search_item("01") == false);
+    BOOST_REQUIRE(search_item("02") == true);
+    BOOST_REQUIRE(search_item("03") == true);
+    BOOST_REQUIRE(search_item("04") == true);
+    BOOST_REQUIRE(search_item("05") == true);
+    BOOST_REQUIRE(search_item("06") == true);
+    BOOST_REQUIRE(search_item("07") == true);
+    BOOST_REQUIRE(search_item("08") == true);
+    BOOST_REQUIRE(search_item("09") == false);
 }
 
 BOOST_AUTO_TEST_CASE(test_split_after) {

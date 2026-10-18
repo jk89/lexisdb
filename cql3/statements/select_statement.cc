@@ -2428,7 +2428,8 @@ void select_statement::check_needs_filtering(
 {
     // non-key-range non-indexed queries cannot involve filtering underneath
     if (!_parameters->allow_filtering() && (restrictions.is_key_range() || restrictions.uses_secondary_indexing())) {
-        if (restrictions.need_filtering() || needs_allow_filtering_anyway(restrictions, strict_allow_filtering, warnings)) {
+        const bool needs_filtering = restrictions.need_filtering() && !restrictions.is_ordered_partition_range_only();
+        if (needs_filtering || needs_allow_filtering_anyway(restrictions, strict_allow_filtering, warnings)) {
             throw exceptions::invalid_request_exception(
                 "Cannot execute this query as it might involve data filtering and "
                     "thus may have unpredictable performance. If you want to execute "

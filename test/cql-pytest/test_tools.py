@@ -361,7 +361,9 @@ def test_scylla_sstable_script_slice(cql, test_keyspace, scylla_path, scylla_dat
             if token is None:
                 res = 0
             else:
-                res = int(token) - int(self.token)
+                # Tokens are hex encoded byte strings, compared as unsigned bytes.
+                a, b = bytes.fromhex(token), bytes.fromhex(self.token)
+                res = (a > b) - (a < b)
             if res == 0 and not value is None and not self.value is None :
                 res = int(value) - int(self.value)
             return res if res else -self.weight
@@ -370,7 +372,7 @@ def test_scylla_sstable_script_slice(cql, test_keyspace, scylla_path, scylla_dat
             if self.token is None and self.value is None:
                 return '-inf' if is_start else '+inf'
             if self.value is None:
-                return "t{}".format(int(self.token))
+                return "t{}".format(self.token)
             return lookup_table[self.value]
 
         @staticmethod
@@ -866,7 +868,9 @@ def schema_test_mv_reference_dump(scylla_path, schema_test_mv, schema_test_mv_ss
 @pytest.fixture(scope="class")
 def schema_test_si_reference_dump(scylla_path, schema_test_si, schema_test_si_sstable_prepared):
     with tempfile.NamedTemporaryFile("w+t") as f:
-        f.write(f"CREATE TABLE {schema_test_si} (v2 text, idx_token bigint, pk int, PRIMARY KEY (v2, idx_token, pk))")
+        # The index's token column holds the base table's token, a blob under
+        # ordered partitioning (Lexis).
+        f.write(f"CREATE TABLE {schema_test_si} (v2 text, idx_token blob, pk int, PRIMARY KEY (v2, idx_token, pk))")
         f.flush()
         return _produce_reference_dump(scylla_path, ["--schema-file", f.name], schema_test_si_sstable_prepared)
 
@@ -1162,7 +1166,11 @@ def _generate_key_for_shard(scylla_path: str, shards: int, shard_id: int) -> Ite
     # this only works with the table with a single integer pk. if we want to
     # be more general, we could use a randomized generator to enumerate all
     # possible pk combinations.
-    for pk in itertools.count(start=0, step=1):
+    # Tokens are the order-preserving encoding of the key (Lexis), so nearby
+    # ints have nearby tokens and land on the same shard: walk the int range
+    # in large strides instead of counting up from 0.
+    for i in itertools.count(start=0, step=1):
+        pk = (i * 2654435761) % 2**32 - 2**31
         if _shard_of_values(scylla_path, shards, pk) == shard_id:
             yield pk
 
@@ -1205,12 +1213,29 @@ def test_scylla_sstable_shard_of_vnodes(cql, test_keyspace_vnodes, scylla_path, 
                 assert actual_json == expected_json
 
 
+def _tablet_shard_of_key(cql, keyspace: str, table: str, key: int) -> int:
+    # Tablets own (previous last_token, last_token]. In system.tablets the
+    # last tokens are tagged (0x01 followed by the token bytes for a key), so
+    # byte order of the tagged form is token order.
+    token = cql.execute(f"SELECT token(pk) FROM {keyspace}.{table} WHERE pk = {key}").one()[0]
+    tagged = b'\x01' + token
+    rows = cql.execute(f"SELECT last_token, replicas FROM system.tablets WHERE keyspace_name = '{keyspace}' "
+                       f"AND table_name = '{table}' ALLOW FILTERING")
+    for row in sorted(rows, key=lambda r: r.last_token):
+        if tagged <= row.last_token:
+            return row.replicas[0][1]
+    assert False, f"no tablet of {keyspace}.{table} owns {token.hex()}"
+
+
 def test_scylla_sstable_shard_of_tablets(cql, test_keyspace_tablets, scylla_path, scylla_data_dir) -> None:
-    # the token for 0 is mapped to shard 0, 142 is mapped to shard 1
-    shard_to_key = {0: 0, 1: 142}
-    for shard_id, key in shard_to_key.items():
+    # Which shard owns a key depends on where the tablet allocator put its
+    # tablet, so take the expected shard from system.tablets. The smallest and
+    # the largest int key live in the first and the last tablet.
+    for key in [-2**31, 2**31 - 1]:
         table_factory = functools.partial(_simple_table_with_keys, keys=[key])
         with scylla_sstable(table_factory, cql, test_keyspace_tablets, scylla_data_dir) as (schema_file, sstables):
+            table = os.path.basename(os.path.dirname(sstables[0])).rsplit('-', 1)[0]
+            shard_id = _tablet_shard_of_key(cql, test_keyspace_tablets, table, key)
             with nodetool.no_autocompaction_context(cql, "system.tablets"):
                 nodetool.flush_keyspace(cql, "system")
                 out = subprocess.check_output([scylla_path,

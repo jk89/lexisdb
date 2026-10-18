@@ -1421,7 +1421,7 @@ static lw_shared_ptr<column_specification> get_lhs_receiver(const expression& pr
                     schema.ks_name(),
                     schema.cf_name(),
                     ::make_shared<column_identifier>("partition key token", true),
-                    long_type);
+                    dht::token::get_token_validator());
             }
 
             data_type return_type = std::visit(

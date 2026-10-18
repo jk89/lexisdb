@@ -14,6 +14,12 @@
 #include "test/lib/tmpdir.hh"
 #include "test/lib/sstable_test_env.hh"
 #include "sstable_test.hh"
+#include "test/lib/murmur3_partitioner.hh"
+
+// The sstable fixtures in test/resource/sstables were written with the Murmur3
+// partitioner; read them with it (see test/lib/murmur3_partitioner.hh).
+using tests::murmur3_partitioner_by_default;
+BOOST_TEST_GLOBAL_FIXTURE(murmur3_partitioner_by_default);
 
 using namespace sstables;
 namespace fs = std::filesystem;

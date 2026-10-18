@@ -73,6 +73,7 @@
 #include "readers/combined.hh"
 #include "utils/assert.hh"
 #include "utils/pretty_printers.hh"
+#include "test/lib/murmur3_partitioner.hh"
 
 namespace fs = std::filesystem;
 
@@ -213,7 +214,9 @@ SEASTAR_TEST_CASE(compact) {
         auto builder = schema_builder("tests", "compaction")
             .with_column("name", utf8_type, column_kind::partition_key)
             .with_column("age", int32_type)
-            .with_column("height", int32_type);
+            .with_column("height", int32_type)
+            // The fixture was written with the Murmur3 partitioner.
+            .with_partitioner(tests::murmur3_partitioner::classname);
         builder.set_comment("Example table for compaction");
         builder.set_gc_grace_seconds(std::numeric_limits<int32_t>::max());
         auto s = builder.build();
@@ -1193,9 +1196,10 @@ SEASTAR_TEST_CASE(tombstone_purge_test) {
 
             auto result = compact({sst1, sst2}, {sst2});
             BOOST_REQUIRE_EQUAL(1, result.size());
+            // Partitions are in key order: alpha, then beta.
             assert_that(sstable_reader(result[0], s, env.make_reader_permit()))
-                    .produces(mut3)
                     .produces(mut2)
+                    .produces(mut3)
                     .produces_end_of_stream();
         }
         {
@@ -5275,9 +5279,13 @@ SEASTAR_TEST_CASE(tombstone_gc_disabled_test) {
         auto beta = partition_key::from_exploded(*s, {to_bytes("beta")});
 
         auto perform_tombstone_gc_test = [&] (bool tombstone_gc_enabled) {
-            auto mut1 = make_insert(alpha);
-            auto mut2 = make_delete(alpha);
-            auto mut3 = make_insert(beta);
+            // With update_tomb_gc_during_compaction the setting changes when the
+            // first output sstable is created, i.e. when the first partition is
+            // written, so the tombstone must not be in the first partition.
+            // Partitions are in key order (alpha < beta): put it on beta.
+            auto mut1 = make_insert(beta);
+            auto mut2 = make_delete(beta);
+            auto mut3 = make_insert(alpha);
 
             auto sst1 = make_sstable_containing(sst_gen, {mut1});
             auto sst2 = make_sstable_containing(sst_gen, {mut2, mut3});

@@ -54,6 +54,12 @@
 #include "readers/from_fragments_v2.hh"
 #include "test/lib/random_schema.hh"
 #include "test/lib/exception_utils.hh"
+#include "test/lib/murmur3_partitioner.hh"
+
+// The sstable fixtures in test/resource/sstables were written with the Murmur3
+// partitioner; read them with it (see test/lib/murmur3_partitioner.hh).
+using tests::murmur3_partitioner_by_default;
+BOOST_TEST_GLOBAL_FIXTURE(murmur3_partitioner_by_default);
 
 namespace fs = std::filesystem;
 
@@ -2540,7 +2546,7 @@ SEASTAR_TEST_CASE(test_reads_cassandra_static_compact) {
 }
 
 static dht::token token_from_long(int64_t value) {
-    return dht::token{ value };
+    return dht::token::from_int64(value);
 }
 
 SEASTAR_TEST_CASE(basic_interval_map_testing_for_sstable_set) {
@@ -2911,11 +2917,20 @@ SEASTAR_TEST_CASE(test_index_fast_forwarding_after_eof) {
         const auto t2 = muts.back().decorated_key()._token;
         dht::partition_range_vector prs;
 
-        prs.emplace_back(dht::ring_position::starting_at(dht::token{t1.raw() - 200}), dht::ring_position::ending_at(dht::token{t1.raw() - 100}));
-        prs.emplace_back(dht::ring_position::starting_at(dht::token{t1.raw() + 2}), dht::ring_position::ending_at(dht::token{t2.raw() + 2}));
+        // after(t, n): n successors past t; no key lies strictly between t and after(t, 1).
+        auto after = [] (dht::token t, int n) {
+            while (n--) {
+                t = t.next();
+            }
+            return t;
+        };
+        // The empty key token sorts below every encoded key, so this range is before t1 and empty.
+        const auto below_t1 = dht::token(dht::token::kind::key, bytes());
+        prs.emplace_back(dht::ring_position::starting_at(below_t1), dht::ring_position::ending_at(below_t1));
+        prs.emplace_back(dht::ring_position::starting_at(after(t1, 1)), dht::ring_position::ending_at(after(t2, 1)));
         // Should be at eof() after the above range is finished
-        prs.emplace_back(dht::ring_position::starting_at(dht::token{t2.raw() + 100}), dht::ring_position::ending_at(dht::token{t2.raw() + 200}));
-        prs.emplace_back(dht::ring_position::starting_at(dht::token{t2.raw() + 300}), dht::ring_position::ending_at(dht::token{t2.raw() + 400}));
+        prs.emplace_back(dht::ring_position::starting_at(after(t2, 2)), dht::ring_position::ending_at(after(t2, 3)));
+        prs.emplace_back(dht::ring_position::starting_at(after(t2, 4)), dht::ring_position::ending_at(after(t2, 5)));
 
         auto reader = sst->make_reader(schema, permit, prs.front(), schema->full_slice());
         auto close_reader = deferred_close(reader);

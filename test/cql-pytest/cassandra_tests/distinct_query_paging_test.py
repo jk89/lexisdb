@@ -23,8 +23,8 @@ def testSelectDistinct(cql, test_keyspace):
 
         assertRows(execute(cql, table, "SELECT DISTINCT pk0, pk1 FROM %s LIMIT 3"),
                    row(0, 0),
-                   row(2, 2),
-                   row(1, 1))
+                   row(1, 1),
+                   row(2, 2))
 
         # Test selection validation.
         assertInvalidMessage(cql, table, "queries must request all the partition key columns", "SELECT DISTINCT pk0 FROM %s")

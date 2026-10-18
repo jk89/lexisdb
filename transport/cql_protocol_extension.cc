@@ -18,7 +18,9 @@ namespace cql_transport {
 static const std::map<cql_protocol_extension, seastar::sstring> EXTENSION_NAMES = {
     {cql_protocol_extension::LWT_ADD_METADATA_MARK, "SCYLLA_LWT_ADD_METADATA_MARK"},
     {cql_protocol_extension::RATE_LIMIT_ERROR, "SCYLLA_RATE_LIMIT_ERROR"},
-    {cql_protocol_extension::TABLETS_ROUTING_V1, "TABLETS_ROUTING_V1"}
+    // Lexis sends ordered (blob) tokens, so it advertises its own key: drivers
+    // that only understand upstream's bigint tokens do not negotiate it.
+    {cql_protocol_extension::TABLETS_ROUTING_V1, "LEXIS_TABLETS_ROUTING_V1"}
 };
 
 cql_protocol_extension_enum_set supported_cql_protocol_extensions() {

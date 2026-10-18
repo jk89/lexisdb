@@ -23,7 +23,7 @@ const sstring cdc_partitioner::name() const {
 }
 
 static dht::token to_token(int64_t value) {
-    return dht::token(value);
+    return dht::token::from_int64(value);
 }
 
 static dht::token to_token(bytes_view key) {
@@ -35,7 +35,7 @@ static dht::token to_token(bytes_view key) {
 }
 
 dht::token
-cdc_partitioner::get_token(const sstables::key_view& key) const {
+cdc_partitioner::get_token(const schema&, const sstables::key_view& key) const {
     return key.with_linearized([&] (bytes_view v) {
         return to_token(v);
     });

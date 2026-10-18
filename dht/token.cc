@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <limits>
 #include <ostream>
-#include <boost/lexical_cast.hpp>
+#include <random>
 
 #include "dht/token.hh"
 #include "dht/token-sharding.hh"
@@ -18,60 +18,108 @@ namespace dht {
 
 using uint128_t = unsigned __int128;
 
-inline int64_t long_token(const token& t) {
-    return t._data;
-}
-
 std::ostream& operator<<(std::ostream& out, const token& t) {
     fmt::print(out, "{}", t);
     return out;
 }
 
-sstring token::to_sstring() const {
-    return seastar::to_sstring<sstring>(long_token(*this));
+static const token first_token_value{token::kind::key, bytes_view(std::array<int8_t, 2>{0x00, 0x00}.data(), 2)};
+
+token token::first() noexcept {
+    return first_token_value;
 }
 
+sstring token::to_sstring() const {
+    return to_hex(to_bytes(_data));
+}
+
+// Treats each token as a base-256 fraction 0.b0 b1 b2 ... in [0, 1), with
+// maximum_token() as 1.0, and returns the average. A wrapping range
+// (left > right) is measured going around the ring, i.e. right + 1.
+// The result keeps one byte more precision than the longer input, so it
+// never collapses onto an endpoint unless the endpoints are equal as fractions.
 token token::midpoint(const token& t1, const token& t2) {
-    uint64_t l1 = long_token(t1);
-    uint64_t l2 = long_token(t2);
-    int64_t mid = l1 + (l2 - l1)/2;
-    return token{kind::key, mid};
+    if (t1 == t2) {
+        return t1;
+    }
+    const bytes a = to_bytes(t1._data);
+    const bytes b = to_bytes(t2._data);
+    const size_t n = std::max(a.size(), b.size()) + 1;
+    bytes mid(bytes::initialized_later(), n);
+    unsigned carry = 0;
+    for (size_t i = n; i-- > 0;) {
+        unsigned x = (i < a.size() ? uint8_t(a[i]) : 0u) + (i < b.size() ? uint8_t(b[i]) : 0u) + carry;
+        mid[i] = int8_t(x & 0xff);
+        carry = x >> 8;
+    }
+    unsigned integer_part = carry + t1.is_maximum() + t2.is_maximum() + (t2 < t1 ? 1 : 0);
+    // Divide by two; the integer part of the result is dropped (mod 1).
+    unsigned shift_in = integer_part & 1;
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t v = mid[i];
+        mid[i] = int8_t((shift_in << 7) | (v >> 1));
+        shift_in = v & 1;
+    }
+    // Trailing zero bytes do not change the fraction; dropping them keeps the
+    // midpoint of two bias() boundaries a bias() boundary.
+    size_t len = mid.size();
+    while (len > 0 && mid[len - 1] == 0) {
+        --len;
+    }
+    mid.resize(len);
+    token result(kind::key, bytes_view(mid));
+    if (t1 < t2 && !(t1 <= result && result <= t2)) {
+        // t2 is t1 padded with zero bytes: nothing lies strictly between them.
+        return t1;
+    }
+    return result;
 }
 
 token token::get_random_token() {
     static thread_local std::default_random_engine re{std::random_device{}()};
-    // std::numeric_limits<int64_t>::min() value is reserved and shouldn't
-    // be used for regular tokens.
-    static thread_local std::uniform_int_distribution<int64_t> dist(
-            std::numeric_limits<int64_t>::min() + 1);
-    return token(kind::key, dist(re));
+    static thread_local std::uniform_int_distribution<uint64_t> dist(1);
+    // Vnode tokens are boundaries, so build them with bias(): they then
+    // round-trip through the 64-bit formats (see to_int64()).
+    return bias(dist(re));
 }
 
 token token::from_sstring(const sstring& t) {
-    auto lp = boost::lexical_cast<long>(t);
-    if (lp == std::numeric_limits<long>::min()) {
+    if (t.empty()) {
         return minimum_token();
-    } else {
-        return token(kind::key, uint64_t(lp));
     }
+    return token(kind::key, bytes_view(from_hex(t)));
 }
 
 token token::from_bytes(bytes_view bytes) {
-    if (bytes.size() != sizeof(int64_t)) {
-        throw runtime_exception(format("Invalid token. Should have size {:d}, has size {:d}\n", sizeof(int64_t), bytes.size()));
-    }
-
-    auto tok = net::ntoh(read_unaligned<int64_t>(bytes.begin()));
-    if (tok == std::numeric_limits<int64_t>::min()) {
+    if (bytes.empty()) {
         return minimum_token();
-    } else {
-        return dht::token(dht::token::kind::key, tok);
     }
+    return token(kind::key, bytes);
 }
 
-static float ratio_helper(int64_t a, int64_t b) {
+bytes token::to_tagged_bytes() const {
+    bytes b(bytes::initialized_later(), _data.size() + 1);
+    b[0] = int8_t(_kind);
+    auto out = b.begin() + 1;
+    for (bytes_view frag : fragment_range(managed_bytes_view(_data))) {
+        out = std::copy(frag.begin(), frag.end(), out);
+    }
+    return b;
+}
 
-    uint64_t val = (a > b)? static_cast<uint64_t>(a) - static_cast<uint64_t>(b) : (static_cast<uint64_t>(a) - static_cast<uint64_t>(b) - 1);
+token token::from_tagged_bytes(bytes_view b) {
+    if (b.empty() || uint8_t(b[0]) > uint8_t(kind::after_all_keys)) {
+        throw runtime_exception(format("Invalid tagged token: {}", fmt_hex(b)));
+    }
+    auto k = kind(b[0]);
+    if (k != kind::key && b.size() != 1) {
+        throw runtime_exception(format("Invalid tagged token: {}", fmt_hex(b)));
+    }
+    return token(k, b.substr(1));
+}
+
+static float ratio_helper(uint64_t a, uint64_t b) {
+    uint64_t val = (a > b) ? a - b : (a - b - 1);
     return val/(float)std::numeric_limits<uint64_t>::max();
 }
 
@@ -89,13 +137,14 @@ token::describe_ownership(const std::vector<token>& sorted_tokens) {
         ownerships[sorted_tokens[0]] = 1.0;
     // n-case
     } else {
+        // Ownership is approximated on the 64-bit projection of each token.
         const token& start = sorted_tokens[0];
 
-        int64_t ti = long_token(start);  // The first token and its value
-        int64_t start_long = ti;
-        int64_t tim1 = ti; // The last token and its value (after loop)
+        uint64_t ti = start.unbias();  // The first token and its value
+        uint64_t start_long = ti;
+        uint64_t tim1 = ti; // The last token and its value (after loop)
         for (i++; i != sorted_tokens.end(); i++) {
-            ti = long_token(*i); // The next token and its value
+            ti = i->unbias(); // The next token and its value
             ownerships[*i]= ratio_helper(ti, tim1);  // save (T(i) -> %age)
             tim1 = ti;
         }
@@ -109,7 +158,50 @@ token::describe_ownership(const std::vector<token>& sorted_tokens) {
 
 data_type
 token::get_token_validator() {
-    return long_type;
+    return bytes_type;
+}
+
+uint64_t token::unbias() const noexcept {
+    uint64_t n = 0;
+    size_t i = 0;
+    for (bytes_view frag : fragment_range(managed_bytes_view(_data))) {
+        for (auto c : frag) {
+            if (i++ == sizeof(uint64_t)) {
+                return n;
+            }
+            n = (n << 8) | uint8_t(c);
+        }
+    }
+    for (; i < sizeof(uint64_t); ++i) {
+        n <<= 8;
+    }
+    return n;
+}
+
+token token::bias(uint64_t n) {
+    bytes b(bytes::initialized_later(), sizeof(uint64_t));
+    write_unaligned<uint64_t>(b.begin(), net::hton(n));
+    size_t len = sizeof(uint64_t);
+    while (len > 0 && b[len - 1] == 0) {
+        --len;
+    }
+    b.resize(len);
+    return token(kind::key, std::move(b));
+}
+
+int64_t token::to_int64(const token& t) {
+    if (t._kind != kind::key) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    uint64_t n = t.unbias();
+    if (bias(n) != t) {
+        throw runtime_exception(format("Token {} has no 64-bit representation", t));
+    }
+    return int64_t(n ^ (uint64_t(1) << 63));
+}
+
+token token::from_int64(int64_t v) {
+    return bias(uint64_t(v) ^ (uint64_t(1) << 63));
 }
 
 inline
@@ -189,19 +281,10 @@ token_for_next_shard(const std::vector<uint64_t>& shard_start, unsigned shard_co
     return bias(n);
 }
 
-int64_t token::to_int64(token t) {
-    return long_token(t);
-}
-
-dht::token token::from_int64(int64_t i) {
-    return {kind::key, i};
-}
-
 static
 dht::token find_first_token_for_shard_in_not_wrap_around_range(const dht::static_sharder& sharder, dht::token start, dht::token end, size_t shard_idx) {
-    // Invariant start < end
-    // It is guaranteed that start is not MAX_INT64 because end is greater
-    auto t = dht::token::from_int64(dht::token::to_int64(start) + 1);
+    // Invariant start < end, so start is not maximum_token()
+    auto t = start.is_minimum() ? dht::token(dht::token::kind::key, bytes()) : start.next();
     if (sharder.shard_of(t) != shard_idx) {
         t = sharder.token_for_next_shard(t, shard_idx);
     }
@@ -214,20 +297,25 @@ dht::token find_first_token_for_shard(
         return find_first_token_for_shard_in_not_wrap_around_range(sharder, start, end, shard_idx);
     } else { // A wrap around token range
         dht::token t;
-        if (dht::token::to_int64(start) != std::numeric_limits<int64_t>::max()) {
+        if (!start.is_maximum()) {
             t = find_first_token_for_shard_in_not_wrap_around_range(sharder, start, dht::maximum_token(), shard_idx);
             if (!t.is_maximum()) {
-                // This means we have found a token for shard shard_idx before 2^63
+                // This means we have found a token for shard shard_idx after start
                 return t;
             }
         }
-        // No token owned by shard shard_idx was found in (start, 2^63 - 1]
-        // so we have to search in (-2^63, end]
+        // No token owned by shard shard_idx was found in (start, maximum)
+        // so we have to search in (minimum, end]
         return find_first_token_for_shard_in_not_wrap_around_range(
                 sharder, dht::minimum_token(), end, shard_idx);
     }
 }
 
+// Compaction group g covers the tokens in (last_token_of_compaction_group(g - 1),
+// last_token_of_compaction_group(g)]. Group boundaries are bias(start of next group),
+// which are never valid encoded keys, so the 64-bit projection decides the group
+// for every key; only a boundary token itself has to be moved down into the group
+// it closes.
 size_t
 compaction_group_of(unsigned most_significant_bits, const token& t) {
     if (!most_significant_bits) {
@@ -239,20 +327,20 @@ compaction_group_of(unsigned most_significant_bits, const token& t) {
         case token::kind::after_all_keys:
             return (1 << most_significant_bits) - 1;
         case token::kind::key:
-            uint64_t adjusted = unbias(t);
-            return adjusted >> (64 - most_significant_bits);
+            size_t group = unbias(t) >> (64 - most_significant_bits);
+            if (group > 0 && t == bias(uint64_t(group) << (64 - most_significant_bits))) {
+                return group - 1;
+            }
+            return group;
     }
     __builtin_unreachable();
 }
 
 token last_token_of_compaction_group(unsigned most_significant_bits, size_t group) {
-    uint64_t n;
     if (group == ((1ul << most_significant_bits) - 1)) {
-        n = std::numeric_limits<uint64_t>::max();
-    } else {
-        n = ((uint64_t(group) + 1) << (64 - most_significant_bits)) - 1;
+        return maximum_token();
     }
-    return bias(n);
+    return bias((uint64_t(group) + 1) << (64 - most_significant_bits));
 }
 
 } // namespace dht

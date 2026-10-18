@@ -62,9 +62,9 @@ def test_filtering_contiguous_nonmatching_partition_range(cql, test_keyspace, dr
             cql.execute(stmt, [i, i])
         # We want the filter to match only at the end the scan - but we don't
         # know the partition order (we don't want the test to depend on the
-        # partitioner). So we first figure out a partition near the end (at
-        # some high token), and use that in the filter.
-        p, v = list(cql.execute(f"SELECT p, v FROM {table} WHERE TOKEN(p) > 8000000000000000000 LIMIT 1"))[0]
+        # partitioner). So we first figure out the last partition of a full
+        # scan, and use that in the filter.
+        p, v = list(cql.execute(f"SELECT p, v FROM {table}"))[-1]
         assert list(cql.execute(f"SELECT p FROM {table} WHERE v={v} ALLOW FILTERING")) == [(p,)]
 
 # Reproducer for issue #8203, single-partition scan case
@@ -398,6 +398,8 @@ def test_filter_and_fetch_size(cql, test_keyspace, use_index, driver_bug_1):
 # if the key(s) are specified, they should be listed in the partition key order
 # Reproduces #13468
 def test_filter_token(cql, test_keyspace):
+    # Tokens are blobs (the ordered encoding of the partition key), so they
+    # are compared with blob literals.
     with new_test_table(cql, test_keyspace, 'pk int, ck int, x int, PRIMARY KEY (pk, ck)') as table:
         # In this case token() expects just a single argument, if we pass
         # it the same one twice we get different errors in ScyllaDB and
@@ -405,7 +407,7 @@ def test_filter_token(cql, test_keyspace):
         # Cassandra complains that the two arguments are the same - "The
         # token() function contains duplicate partition key components":
         with pytest.raises(InvalidRequest, match='Invalid number of arguments|duplicate partition key'):
-            cql.execute(f'SELECT pk FROM {table} WHERE token(pk, pk) = 0')
+            cql.execute(f'SELECT pk FROM {table} WHERE token(pk, pk) = 0x00')
     with new_test_table(cql, test_keyspace, 'pk1 int, pk2 int, x int, PRIMARY KEY ((pk1, pk2))') as table:
         # In the following cases, token() expects two arguments but they
         # should be the two partition key columns, not something else like
@@ -415,13 +417,13 @@ def test_filter_token(cql, test_keyspace):
         # Cassandra makes a general complaint about the that token() "must
         # be applied to all partition key components or none of them".
         with pytest.raises(InvalidRequest, match='duplicate partition key|must be applied to all partition key components or none of them'):
-            cql.execute(f'SELECT pk1 FROM {table} WHERE token(pk1, pk1) = 0')
+            cql.execute(f'SELECT pk1 FROM {table} WHERE token(pk1, pk1) = 0x00')
         with pytest.raises(InvalidRequest, match='Invalid number of arguments|must be applied to all partition key components or none of them'):
-            cql.execute(f'SELECT pk1 FROM {table} WHERE token(x) = 0')
+            cql.execute(f'SELECT pk1 FROM {table} WHERE token(x) = 0x00')
         with pytest.raises(InvalidRequest, match='Invalid number of arguments|must be applied to all partition key components or none of them'):
-            cql.execute(f'SELECT pk1 FROM {table} WHERE token(pk1) = 0')
+            cql.execute(f'SELECT pk1 FROM {table} WHERE token(pk1) = 0x00')
         with pytest.raises(InvalidRequest, match='partition key order'):
-            cql.execute(f'SELECT pk1 FROM {table} WHERE token(pk2, pk1) = 0')
+            cql.execute(f'SELECT pk1 FROM {table} WHERE token(pk2, pk1) = 0x00')
 
 
 # In a query with a token restriction the name assigned to the bind marker should be "partition key token".

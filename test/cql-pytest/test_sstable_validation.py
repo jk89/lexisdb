@@ -123,13 +123,15 @@ def validate_mixed_sstable_pair(ssta, sstb, scylla_path, sst_cache, sst_work_dir
 
 
 def make_partition(pk, ck, v):
-    pks = [ "000400000001", "000400000000", "000400000002", "000400000003" ]
+    # Partition keys in token order, which is key order (Lexis).
+    pks = [ "000400000000", "000400000001", "000400000002", "000400000003" ]
     r = { "type": "clustering-row", "key": { "raw": "0004{:08x}".format(ck) }, "columns": { "v": { "is_live": True, "type": "regular", "timestamp": 1680263186359882, "value": v } } }
     return { "key": { "raw": pks[pk] }, "clustering_elements": [ r ] }
 
 
 def make_large_partition(pk, rows, with_static_row = False):
-    pks = [ "000400000001", "000400000000", "000400000002", "000400000003" ]
+    # Partition keys in token order, which is key order (Lexis).
+    pks = [ "000400000000", "000400000001", "000400000002", "000400000003" ]
     if with_static_row:
         return {
              "key": { "raw": pks[pk] },

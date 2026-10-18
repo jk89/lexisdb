@@ -28,7 +28,7 @@ struct cdc_partitioner final : public dht::i_partitioner {
     cdc_partitioner() = default;
     virtual const sstring name() const override;
     virtual dht::token get_token(const schema& s, partition_key_view key) const override;
-    virtual dht::token get_token(const sstables::key_view& key) const override;
+    virtual dht::token get_token(const schema& s, const sstables::key_view& key) const override;
 };
 
 

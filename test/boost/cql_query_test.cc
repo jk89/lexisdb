@@ -1084,18 +1084,19 @@ SEASTAR_TEST_CASE(test_partition_range_queries_with_bounds) {
             auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(msg);
             BOOST_REQUIRE(rows);
             std::vector<bytes> keys;
-            std::vector<int64_t> tokens;
+            // Tokens are blobs (ordered partitioning); the queries use them as hex literals.
+            std::vector<sstring> tokens;
             const auto& rs = rows->rs().result_set();
             for (auto&& row : rs.rows()) {
                 BOOST_REQUIRE(row[0]);
                 BOOST_REQUIRE(row[1]);
                 keys.push_back(to_bytes(*row[0]));
-                tokens.push_back(value_cast<int64_t>(long_type->deserialize(*row[1])));
+                tokens.push_back("0x" + to_hex(to_bytes(*row[1])));
             }
             BOOST_REQUIRE(keys.size() == 5);
 
             return now().then([keys, tokens, &e] {
-                return e.execute_cql(format("select k from cf where token(k) > {:d};", tokens[1])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
+                return e.execute_cql(format("select k from cf where token(k) > {};", tokens[1])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().with_rows({
                         {keys[2]},
                         {keys[3]},
@@ -1103,7 +1104,7 @@ SEASTAR_TEST_CASE(test_partition_range_queries_with_bounds) {
                     });
                 });
             }).then([keys, tokens, &e] {
-                return e.execute_cql(format("select k from cf where token(k) >= {:d};", tokens[1])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
+                return e.execute_cql(format("select k from cf where token(k) >= {};", tokens[1])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().with_rows({
                         {keys[1]},
                         {keys[2]},
@@ -1112,7 +1113,7 @@ SEASTAR_TEST_CASE(test_partition_range_queries_with_bounds) {
                     });
                 });
             }).then([keys, tokens, &e] {
-                return e.execute_cql(format("select k from cf where token(k) > {:d} and token(k) < {:d};",
+                return e.execute_cql(format("select k from cf where token(k) > {} and token(k) < {};",
                         tokens[1], tokens[4])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().with_rows({
                         {keys[2]},
@@ -1120,7 +1121,7 @@ SEASTAR_TEST_CASE(test_partition_range_queries_with_bounds) {
                     });
                 });
             }).then([keys, tokens, &e] {
-                return e.execute_cql(format("select k from cf where token(k) < {:d};", tokens[3])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
+                return e.execute_cql(format("select k from cf where token(k) < {};", tokens[3])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().with_rows({
                         {keys[0]},
                         {keys[1]},
@@ -1128,22 +1129,22 @@ SEASTAR_TEST_CASE(test_partition_range_queries_with_bounds) {
                     });
                 });
             }).then([keys, tokens, &e] {
-                return e.execute_cql(format("select k from cf where token(k) = {:d};", tokens[3])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
+                return e.execute_cql(format("select k from cf where token(k) = {};", tokens[3])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().with_rows({
                         {keys[3]}
                     });
                 });
             }).then([keys, tokens, &e] {
-                return e.execute_cql(format("select k from cf where token(k) < {:d} and token(k) > {:d};", tokens[3], tokens[3])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
+                return e.execute_cql(format("select k from cf where token(k) < {} and token(k) > {};", tokens[3], tokens[3])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().is_empty();
                 });
             }).then([keys, tokens, &e] {
-                return e.execute_cql(format("select k from cf where token(k) >= {:d} and token(k) <= {:d};", tokens[4], tokens[2])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
+                return e.execute_cql(format("select k from cf where token(k) >= {} and token(k) <= {};", tokens[4], tokens[2])).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().is_empty();
                 });
             }).then([keys, tokens, &e] {
-                auto min_token = std::numeric_limits<int64_t>::min();
-                return e.execute_cql(format("select k from cf where token(k) > {:d} and token (k) < {:d};", min_token, min_token)).then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
+                // An empty blob is the minimum token; `< 0x` means no upper bound.
+                return e.execute_cql("select k from cf where token(k) > 0x and token (k) < 0x;").then([keys](shared_ptr<cql_transport::messages::result_message> msg) {
                     assert_that(msg).is_rows().with_rows({
                         {keys[0]},
                         {keys[1]},
@@ -3100,7 +3101,7 @@ SEASTAR_TEST_CASE(test_pg_style_string_literal) {
             assert_that_failed(f);
             return e.execute_cql("select * from test;");
         }).then([] (shared_ptr<cql_transport::messages::result_message> msg) {
-            assert_that(msg).is_rows().with_rows({
+            assert_that(msg).is_rows().with_rows_ignore_order({
                 { utf8_type->decompose(sstring("Apostrophe's$ $ not$ $ '' escaped")) },
                 { utf8_type->decompose(sstring("$''valid$_$key")) },
                 { utf8_type->decompose(sstring("$normal$valid$$$$key$")) },
@@ -3173,7 +3174,7 @@ SEASTAR_TEST_CASE(test_empty_partition_range_scan) {
 
         auto qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, std::vector<cql3::raw_value>{},
                 cql3::query_options::specific_options{1, nullptr, {}, api::new_timestamp()});
-        auto res = e.execute_cql("select * from empty_partition_range_scan.tb where token (a,b) > 1 and token(a,b) <= 1;", std::move(qo)).get();
+        auto res = e.execute_cql("select * from empty_partition_range_scan.tb where token (a,b) > 0x01 and token(a,b) <= 0x01;", std::move(qo)).get();
         assert_that(res).is_rows().is_empty();
     });
 }
@@ -5311,7 +5312,7 @@ SEASTAR_TEST_CASE(test_parallelized_select_sum_group_by) {
         }
     
         auto msg = e.execute_cql("SELECT k, SUM(v) FROM tbl GROUP BY k;").get();
-        assert_that(msg).is_rows().with_rows({
+        assert_that(msg).is_rows().with_rows_ignore_order({
             {int32_type->decompose(int32_t(1)), int32_type->decompose(int32_t((value_count - 1) * value_count / 2))},
             {int32_type->decompose(int32_t(0)), int32_type->decompose(int32_t((value_count - 1) * value_count / 2))}
         });
@@ -5378,7 +5379,7 @@ SEASTAR_TEST_CASE(test_single_partition_aggregation_is_not_parallelized) {
         });
         BOOST_CHECK_EQUAL(stat_parallelized, qp.get_cql_stats().select_parallelized);
 
-        const auto result3 = e.execute_cql("SELECT COUNT(*) FROM tbl WHERE token(pk) = 1;").get();
+        const auto result3 = e.execute_cql("SELECT COUNT(*) FROM tbl WHERE token(pk) = 0x01;").get();
         // We don't check value of count(*) here but only if it wasn't parallelized
         BOOST_CHECK_EQUAL(stat_parallelized, qp.get_cql_stats().select_parallelized);
         
@@ -5793,7 +5794,7 @@ cql_test_config tablet_cql_test_config() {
 static
 bool has_tablet_routing(::shared_ptr<cql_transport::messages::result_message> result) {
     auto custom_payload = result->custom_payload();
-    if (!custom_payload.has_value() || custom_payload->find("tablets-routing-v1") == custom_payload->end()) {
+    if (!custom_payload.has_value() || custom_payload->find("lexis-tablets-routing-v1") == custom_payload->end()) {
         return false;
     }
     return true;

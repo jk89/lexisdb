@@ -17,9 +17,15 @@ struct global_tablet_id final {
     locator::tablet_id tablet;
 };
 
+struct tablet_split_hint final {
+    dht::token token;
+    uint64_t weight;
+};
+
 struct table_load_stats final {
     uint64_t size_in_bytes;
     int64_t split_ready_seq_number;
+    std::unordered_map<uint64_t, locator::tablet_split_hint> split_hints [[version 6.2.3]];
 };
 
 struct load_stats final {

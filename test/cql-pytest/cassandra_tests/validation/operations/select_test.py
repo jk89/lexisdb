@@ -466,7 +466,9 @@ def testTokenRange(cql, test_keyspace):
 
         inOrder = [r[0] for r in res]
 
-        min_token = -9223372036854775808
+        # Tokens are blobs (the ordered encoding of the key); 0x00 sorts
+        # before every token of a key.
+        min_token = "0x00"
         res = list(execute(cql, table, f"SELECT k FROM %s WHERE token(k) >= {min_token}"))
         assert c == len(res)
 
@@ -513,10 +515,10 @@ def testCompositeRowKey(cql, test_keyspace):
             execute(cql, table, "INSERT INTO %s (k1, k2, c, v) VALUES (?, ?, ?, ?)", 0, i, i, i)
 
         assert_rows(execute(cql, table, "SELECT * FROM %s"),
-                   [0, 2, 2, 2],
-                   [0, 3, 3, 3],
                    [0, 0, 0, 0],
-                   [0, 1, 1, 1])
+                   [0, 1, 1, 1],
+                   [0, 2, 2, 2],
+                   [0, 3, 3, 3])
 
         assert_rows(execute(cql, table, "SELECT * FROM %s WHERE k1 = 0 and k2 IN (1, 3)"),
                    [0, 1, 1, 1],
@@ -528,12 +530,13 @@ def testCompositeRowKey(cql, test_keyspace):
                    [0, 1, 1, 1])
 
 
-        MIN_VALUE = -9223372036854775808
+        # Tokens are blobs; 0x00 sorts before every token of a key.
+        MIN_VALUE = b'\x00'
         assert_rows(execute(cql, table, "SELECT * FROM %s WHERE token(k1, k2) > ?", MIN_VALUE),
-                   [0, 2, 2, 2],
-                   [0, 3, 3, 3],
                    [0, 0, 0, 0],
-                   [0, 1, 1, 1])
+                   [0, 1, 1, 1],
+                   [0, 2, 2, 2],
+                   [0, 3, 3, 3])
 
 # Test for Cassandra-4532, NPE when trying to select a slice from a composite table
 # migrated from cql_tests.py:TestCQL.bug_4532_test()
@@ -614,7 +617,9 @@ def testSelectOnCompositeInvalid(cql, test_keyspace):
         execute(cql, table, "INSERT INTO %s (a, b , c ) VALUES (1, 'opl', d4815800-2d8d-11e0-82e0-3f484de45426)")
 
         assert_row_count(execute(cql, table, "SELECT * FROM %s"), 3)
-        assert_invalid(cql, table, "SELECT * FROM %s WHERE a=1")
+        # Under ordered partitioning (Lexis), a leading partition key column
+        # selects a contiguous token range, so this is a valid query.
+        assert_row_count(execute(cql, table, "SELECT * FROM %s WHERE a=1"), 3)
 
 # Migrated from cql_tests.py:TestCQL.multi_in_test()
 def testMultiSelects(cql, test_keyspace):
@@ -718,8 +723,8 @@ def testSelectDistinct(cql, test_keyspace):
 
         assert_rows(execute(cql, table, "SELECT DISTINCT pk0, pk1 FROM %s LIMIT 3"),
                    [0, 0],
-                   [2, 2],
-                   [1, 1])
+                   [1, 1],
+                   [2, 2])
 
         # Test selection validation.
         assert_invalid_message(cql, table, "queries must request all the partition key columns", "SELECT DISTINCT pk0 FROM %s")
@@ -894,7 +899,7 @@ def testAllowFilteringOnPartitionKeyOnStaticColumnsWithRowsWithOnlyStaticValues(
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 1 AND c = 2 AND s >= 1 LIMIT 2 ALLOW FILTERING"),
                        [1, 2, 1, 2, 3],
-                       [4, 2, 4, 2, 6])
+                       [3, 2, 3, 2, 5])
 
             assert_rows_ignoring_order(execute(cql, table, "SELECT * FROM %s WHERE a >= 3 AND c = 2 AND s >= 1 LIMIT 2 ALLOW FILTERING"),
                                     [4, 2, 4, 2, 6],
@@ -912,7 +917,7 @@ def testFilteringOnStaticColumnsWithRowsWithOnlyStaticValues(cql, test_keyspace)
         for _ in before_and_after_flush(cql, table):
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE c = 2 AND s >= 1 LIMIT 2 ALLOW FILTERING"),
                        [1, 2, 1, 2, 3],
-                       [4, 2, 4, 2, 6])
+                       [3, 2, 3, 2, 5])
 
 # Reproduces #10357, #10358
 @pytest.mark.xfail(reason="#10358")
@@ -1353,12 +1358,18 @@ def testAllowFilteringOnPartitionKey(cql, test_keyspace):
             #assert_invalid_message(cql, table, "IN restrictions are not supported when the query involves filtering",
             #        "SELECT * FROM %s WHERE b in (11,12) ALLOW FILTERING")
 
-            assert_invalid_message(cql, table, REQUIRES_ALLOW_FILTERING_MESSAGE,
-                    "SELECT * FROM %s WHERE a = 11")
+            # Under ordered partitioning (Lexis), restricting the leading
+            # partition key column (by equality or a slice) selects a
+            # contiguous token range, so these need no filtering.
+            assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a = 11"),
+                    [11, 12, 13, 14],
+                    [11, 15, 16, 17])
+            assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a > 11"),
+                    [21, 22, 23, 24],
+                    [31, 32, 33, 34])
 
-            # different error messages in Scylla and Cassandra
-            assert_invalid(cql, table,
-                    "SELECT * FROM %s WHERE a > 11")
+            # A column after a slice still needs filtering (different error
+            # messages in Scylla and Cassandra).
             assert_invalid(cql, table,
                     "SELECT * FROM %s WHERE a > 11 and b = 1")
 
@@ -1386,14 +1397,14 @@ def testAllowFilteringOnPartitionKey(cql, test_keyspace):
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE b >= 15 ALLOW FILTERING"),
                     [11, 15, 16, 17],
-                    [31, 32, 33, 34],
-                    [21, 22, 23, 24])
+                    [21, 22, 23, 24],
+                    [31, 32, 33, 34])
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 11 ALLOW FILTERING"),
                     [11, 12, 13, 14],
                     [11, 15, 16, 17],
-                    [31, 32, 33, 34],
-                    [21, 22, 23, 24])
+                    [21, 22, 23, 24],
+                    [31, 32, 33, 34])
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 11 AND b <= 15 ALLOW FILTERING"),
                     [11, 12, 13, 14],
@@ -1427,12 +1438,18 @@ def testAllowFilteringOnPartitionKey(cql, test_keyspace):
             #assert_invalid_message(cql, table, "IN restrictions are not supported when the query involves filtering",
             #        "SELECT * FROM %s WHERE b in (11,12) ALLOW FILTERING")
 
-            assert_invalid_message(cql, table, REQUIRES_ALLOW_FILTERING_MESSAGE,
-                    "SELECT * FROM %s WHERE a = 11")
+            # Under ordered partitioning (Lexis), restricting the leading
+            # partition key column (by equality or a slice) selects a
+            # contiguous token range, so these need no filtering.
+            assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a = 11"),
+                    [11, 12, 13, 14],
+                    [11, 15, 16, 17])
+            assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a > 11"),
+                    [21, 22, 23, 24],
+                    [31, 32, 33, 34])
 
-            # different error messages in Scylla and Cassandra
-            assert_invalid(cql, table,
-                    "SELECT * FROM %s WHERE a > 11")
+            # A column after a slice still needs filtering (different error
+            # messages in Scylla and Cassandra).
             assert_invalid(cql, table,
                     "SELECT * FROM %s WHERE a > 11 and b = 1")
 
@@ -1443,8 +1460,8 @@ def testAllowFilteringOnPartitionKey(cql, test_keyspace):
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 11 ALLOW FILTERING"),
                     [11, 12, 13, 14],
                     [11, 15, 16, 17],
-                    [31, 32, 33, 34],
-                    [21, 22, 23, 24])
+                    [21, 22, 23, 24],
+                    [31, 32, 33, 34])
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 11 AND b <= 15 ALLOW FILTERING"),
                     [11, 12, 13, 14],
@@ -1473,8 +1490,8 @@ def testAllowFilteringOnPartitionKey(cql, test_keyspace):
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 1 ALLOW FILTERING"),
                     [1, 2, 4],
                     [2, 1, 6],
-                    [4, 1, 7],
-                    [3, 2, 4])
+                    [3, 2, 4],
+                    [4, 1, 7])
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 1 AND b >= 2  ALLOW FILTERING"),
                     [1, 2, 4],
@@ -1517,8 +1534,8 @@ def testAllowFilteringOnPartitionAndClusteringKey(cql, test_keyspace):
 
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a <= 100 AND b >= 15 AND c > 0 AND d <= 100 ALLOW FILTERING"),
                     [11, 15, 16, 17, 18],
-                    [31, 32, 33, 34, 35],
-                    [21, 22, 23, 24, 25])
+                    [21, 22, 23, 24, 25],
+                    [31, 32, 33, 34, 35])
 
             # Scylla's and Cassandra's error messages differ here because there
             # are multiple errors in the request... Cassandra says
@@ -1663,8 +1680,8 @@ def testAllowFilteringOnPartitionKeyWithCounters(cql, test_keyspace):
         for _ in before_and_after_flush(cql, table):
 
             assert_rows(executeFilteringOnly(cql, table, "SELECT * FROM %s WHERE cnt = 24"),
-                       [41, 42, 43, 24],
-                       [21, 22, 23, 24])
+                       [21, 22, 23, 24],
+                       [41, 42, 43, 24])
             assert_rows(executeFilteringOnly(cql, table, "SELECT * FROM %s WHERE b > 22 AND cnt = 24"),
                        [41, 42, 43, 24])
             assert_rows(executeFilteringOnly(cql, table, "SELECT * FROM %s WHERE b > 10 AND b < 25 AND cnt = 24"),
@@ -1681,9 +1698,9 @@ def testAllowFilteringOnPartitionKeyWithCounters(cql, test_keyspace):
                        [21, 22, 23, 24])
 
             assert_rows(executeFilteringOnly(cql, table, "SELECT * FROM %s WHERE cnt > 20 AND cnt < 30"),
-                       [41, 42, 43, 24],
                        [21, 22, 23, 24],
-                       [21, 22, 26, 27])
+                       [21, 22, 26, 27],
+                       [41, 42, 43, 24])
 
 def testFilteringOnClusteringColumns(cql, test_keyspace):
     with create_table(cql, test_keyspace, "(a int, b int, c int, d int, PRIMARY KEY (a, b, c))") as table:
@@ -2095,8 +2112,8 @@ def testIndexQueryWithCompositePartitionKey(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             assert_rows(execute(cql, table, "SELECT * FROM %s WHERE p1 = 1 AND v = 3 ALLOW FILTERING"),
-                       [1, 2, 3],
-                       [1, 1, 3])
+                       [1, 1, 3],
+                       [1, 2, 3])
 
 def testEmptyRestrictionValue(cql, test_keyspace):
     with create_table(cql, test_keyspace, "(pk blob, c blob, v blob, PRIMARY KEY ((pk), c))") as table:
@@ -2559,9 +2576,9 @@ def testFilteringOnCollectionsWithNull(cql, test_keyspace):
 
         for _ in before_and_after_flush(cql, table):
             # lists
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 1 ALLOW FILTERING"), [1, 0], [0, 0], [0, 2])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 2], [1, 0])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND l CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 2])
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 2 ALLOW FILTERING"), [1, 0], [0, 0])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 2 ALLOW FILTERING"), [0, 0], [1, 0])
             assert_empty(execute(cql, table, "SELECT k, v FROM %s WHERE l CONTAINS 6 ALLOW FILTERING"))
 
             # sets
@@ -2571,12 +2588,12 @@ def testFilteringOnCollectionsWithNull(cql, test_keyspace):
             assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE s CONTAINS 'e' ALLOW FILTERING"))
 
             # maps
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 1 ALLOW FILTERING"), [1, 0], [1, 1], [0, 0], [0, 1])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 1], [1, 0], [1, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS 1 ALLOW FILTERING"), [0, 0], [0, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS 2 ALLOW FILTERING"), [0, 1])
             assert_empty(execute(cql, table, "SELECT k, v FROM %s  WHERE m CONTAINS 4 ALLOW FILTERING"))
 
-            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'a' ALLOW FILTERING"), [1, 1], [0, 0], [0, 1])
+            assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE m CONTAINS KEY 'a' ALLOW FILTERING"), [0, 0], [0, 1], [1, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS KEY 'a' ALLOW FILTERING"), [0, 0], [0, 1])
             assert_rows(execute(cql, table, "SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS KEY 'c' ALLOW FILTERING"), [0, 2])
 

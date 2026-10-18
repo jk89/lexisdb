@@ -141,9 +141,10 @@ permissions_validity_in_ms: 2000
 # reloading all data, so when upgrading you should set this to the
 # same partitioner you were already using.
 #
-# Murmur3Partitioner is currently the only supported partitioner,
+# LexisByteOrderedPartitioner is the only supported partitioner: the
+# token is an order-preserving encoding of the partition key.
 #
-partitioner: org.apache.cassandra.dht.Murmur3Partitioner
+partitioner: org.lexis.dht.LexisByteOrderedPartitioner
 
 # Directories where Cassandra should store data on disk.  Cassandra
 # will spread data evenly across them, subject to the granularity of

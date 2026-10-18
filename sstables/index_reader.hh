@@ -381,12 +381,21 @@ class index_comparator {
 public:
     index_comparator(const schema& s) : _tri_cmp(s) {}
 
+    std::strong_ordering compare(const index_entry& e, dht::ring_position_view rp) const {
+        // The token is allocated (and freed) in the standard allocator; see
+        // index_entry::get_token().
+        return with_allocator(standard_allocator(), [&] {
+            auto token = e.get_token(_tri_cmp.s);
+            return _tri_cmp(decorated_key_view(token, e.get_key()), rp);
+        });
+    }
+
     bool operator()(const summary_entry& e, dht::ring_position_view rp) const {
         return _tri_cmp(e.get_decorated_key(), rp) < 0;
     }
 
     bool operator()(const index_entry& e, dht::ring_position_view rp) const {
-        return _tri_cmp(e.get_decorated_key(_tri_cmp.s), rp) < 0;
+        return compare(e, rp) < 0;
     }
 
     bool operator()(const managed_ref<index_entry>& e, dht::ring_position_view rp) const {
@@ -402,7 +411,7 @@ public:
     }
 
     bool operator()(dht::ring_position_view rp, const index_entry& e) const {
-        return _tri_cmp(e.get_decorated_key(_tri_cmp.s), rp) > 0;
+        return compare(e, rp) > 0;
     }
 };
 

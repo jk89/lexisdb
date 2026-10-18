@@ -472,8 +472,7 @@ dht::token first_token(const dht::partition_range& pr) {
     // Check if the range excludes "token".
     if (!start.key()
         && start.get_token_bound() == dht::ring_position::token_bound::end
-        && token._kind == dht::token::kind::key
-        && !token.is_last()) {
+        && token._kind == dht::token::kind::key) {
         token = dht::next_token(token);
     }
     return token;

@@ -77,7 +77,7 @@ public:
 
 
 /*
- * Computes token value of partition key and returns it as long_type.
+ * Computes token value of partition key and returns it as bytes_type.
  * The return type means that it can be trivially sorted (for example
  * if computed column using this computation is a clustering key),
  * preserving the correct order of tokens (using signed comparisons).

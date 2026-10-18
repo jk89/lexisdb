@@ -96,11 +96,13 @@ def test_cast_int_to_bigint(cql, table1):
     with pytest.raises(InvalidRequest, match='bigint'):
         cql.execute(f"INSERT INTO {table1} (pk, bigint_col) VALUES ({pk}, (bigint)blobasint(0xbeefdead))")
 
-# The function token() returns a bigint, which can be converted to blob.
+# The function token() returns a blob under ordered partitioning (Lexis): the
+# order-preserving encoding of the key. For an int that is the value with its
+# sign bit flipped, 0x00 escaped as 0x00 0x01, then the 0x00 0x00 terminator.
 def test_cast_bigint_token_to_blobl(cql, table1):
     pk = unique_key_int()
     cql.execute(f"INSERT INTO {table1} (pk, blob_col) VALUEs ({pk}, token(1234))")
-    assert list(cql.execute(f"SELECT pk, blob_col FROM {table1} WHERE pk = {pk}")) == [(pk, int(8821045555241575141).to_bytes(8, 'big'))]
+    assert list(cql.execute(f"SELECT pk, blob_col FROM {table1} WHERE pk = {pk}")) == [(pk, bytes.fromhex('80000104d20000'))]
 
 # Doing (blob)(int)4321 should be allowed - the (int) specifies an exact type for the constant, and an int can be cast to blob.
 def test_cast_int_with_type_hint_to_blob_explicit(cql, table1, scylla_only):

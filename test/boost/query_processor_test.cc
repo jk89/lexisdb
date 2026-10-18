@@ -344,14 +344,14 @@ SEASTAR_TEST_CASE(test_select_full_scan_metrics) {
         qp.execute_internal("select * from system.views_builds_in_progress;", cql3::query_processor::cache_internal::yes).get();
         BOOST_CHECK_EQUAL(stat_ps6, qp.get_cql_stats().select_partition_range_scan);
 
-        // Range token on PK, full scan
+        // Range token on PK, full scan (tokens are blobs: the ordered encoding of the key)
         auto stat_ps7 = qp.get_cql_stats().select_partition_range_scan;
-        qp.execute_internal("select * from ks.fsm where token(pk) > 100;", cql3::query_processor::cache_internal::yes).get();
+        qp.execute_internal("select * from ks.fsm where token(pk) > 0x64;", cql3::query_processor::cache_internal::yes).get();
         BOOST_CHECK_EQUAL(stat_ps7 + 1, qp.get_cql_stats().select_partition_range_scan);
 
         // Token on PK equals, no full scan
         auto stat_ps8 = qp.get_cql_stats().select_partition_range_scan;
-        qp.execute_internal("select * from ks.fsm where token(pk) = 1;", cql3::query_processor::cache_internal::yes).get();
+        qp.execute_internal("select * from ks.fsm where token(pk) = 0x01;", cql3::query_processor::cache_internal::yes).get();
         BOOST_CHECK_EQUAL(stat_ps8, qp.get_cql_stats().select_partition_range_scan);
     });
 }

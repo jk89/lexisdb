@@ -1999,6 +1999,19 @@ SEASTAR_THREAD_TEST_CASE(test_image_deleted_column) {
             return ::make_set_value(int32_set_type, { value }); 
         };
 
+        // The log rows of one base partition, in log (time) order. The two base
+        // partitions may share a CDC stream -- with ordered tokens adjacent keys
+        // usually do -- in which case their rows interleave in the log.
+        auto rows_of = [] (const std::vector<std::vector<data_value>>& result, int32_t pk) {
+            std::vector<std::vector<data_value>> rows;
+            for (auto& r : result) {
+                if (r[1] == data_value(pk)) {
+                    rows.push_back(r);
+                }
+            }
+            return rows;
+        };
+
         auto perform_test = [&](bool full_preimage) {
             sstring preimage_mode = full_preimage ? "'full'" : "true";
 
@@ -2034,10 +2047,10 @@ SEASTAR_THREAD_TEST_CASE(test_image_deleted_column) {
 
             auto result = get_result(e, {oper_type, int32_type, int32_type, int32_type, boolean_type, boolean_type}, query_string);
             BOOST_REQUIRE_EQUAL(result.size(), 10);
-            BOOST_REQUIRE_EQUAL(result[2], preimage1);
-            BOOST_REQUIRE_EQUAL(result[4], postimage1);
-            BOOST_REQUIRE_EQUAL(result[7], preimage2);
-            BOOST_REQUIRE_EQUAL(result[9], postimage2);
+            BOOST_REQUIRE_EQUAL(rows_of(result, 1).at(2), preimage1);
+            BOOST_REQUIRE_EQUAL(rows_of(result, 1).at(4), postimage1);
+            BOOST_REQUIRE_EQUAL(rows_of(result, 2).at(2), preimage2);
+            BOOST_REQUIRE_EQUAL(rows_of(result, 2).at(4), postimage2);
 
             auto test_table_with_collection = [&](bool frozen_collection) {
                 // Create a table and insert data with v = NULL
@@ -2077,10 +2090,10 @@ SEASTAR_THREAD_TEST_CASE(test_image_deleted_column) {
 
                 auto result = get_result(e, {oper_type, int32_type, int32_type, int32_set_type, boolean_type, boolean_type}, query_string);
                 BOOST_REQUIRE_EQUAL(result.size(), 10);
-                BOOST_REQUIRE_EQUAL(result[2], preimage1);
-                BOOST_REQUIRE_EQUAL(result[4], postimage1);
-                BOOST_REQUIRE_EQUAL(result[7], preimage2);
-                BOOST_REQUIRE_EQUAL(result[9], postimage2);
+                BOOST_REQUIRE_EQUAL(rows_of(result, 1).at(2), preimage1);
+                BOOST_REQUIRE_EQUAL(rows_of(result, 1).at(4), postimage1);
+                BOOST_REQUIRE_EQUAL(rows_of(result, 2).at(2), preimage2);
+                BOOST_REQUIRE_EQUAL(rows_of(result, 2).at(4), postimage2);
             };
 
             test_table_with_collection(false);

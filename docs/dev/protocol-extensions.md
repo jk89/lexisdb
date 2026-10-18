@@ -197,17 +197,26 @@ use that information for every subsequent query.
 If we send the query to the wrong node/shard, we want to send the RESULT 
 message with additional information about the tablet in `custom_payload`:
 
-  - `tablets-routing-v1` - tablets routing information, which contains info about token
+  - `lexis-tablets-routing-v1` - tablets routing information, which contains info about token
     range (in format `(first_token, last_token]`) and tablet replicas, for every replica
     there is information about the host and shard.
 
 The driver has to be able to receive `custom_payload` and deserialise its field
 from `bytes` to:
 
-  - for `tablets-routing-v1` - `TupleType(LongType, LongType, ListType(TupleType(UUIDType, Int32Type)))`,
-    two `LongType` represent first and last token, `ListType(TupleType(UUIDType, Int32Type))`
+  - for `lexis-tablets-routing-v1` - `TupleType(BytesType, BytesType, ListType(TupleType(UUIDType, Int32Type)))`,
+    two `BytesType` represent first and last token, `ListType(TupleType(UUIDType, Int32Type))`
     contains information about replicas (for every replica there is a tuple with two elements
     `UUIDType` and `Int32Type` representing host and shard ids).
+
+    Lexis tokens are order-preserving encodings of the partition key, compared as
+    unsigned byte strings. Each token in the payload is tagged: one kind byte
+    (`0x00` before all keys, `0x01` a key, `0x02` after all keys) followed by the
+    key bytes. The first token of the first tablet is `0x00` and the last token of
+    the last tablet is `0x02`. Byte order of the tagged form is token order.
+
+    Upstream ScyllaDB sends `tablets-routing-v1` with `LongType` (Murmur3) tokens;
+    Lexis never sends it.
 
 When the driver receives information about the tablet, it has to check if any of
 the previously received tablets has an overlapping token range.
@@ -222,5 +231,6 @@ tablets and is able to interpret the tablet information sent in `custom_payload`
 Having a designated flag gives the ability to skip tablet metadata generation
 (which is quite expensive) if driver is not aware of tablets. 
 
-The feature is identified by the `TABLETS_ROUTING_V1` key, which is meant to be sent
-in the SUPPORTED message.
+The feature is identified by the `LEXIS_TABLETS_ROUTING_V1` key, which is meant to be sent
+in the SUPPORTED message. (Upstream uses `TABLETS_ROUTING_V1`; Lexis does not advertise
+it, so drivers that only parse `LongType` tokens never receive Lexis tablet payloads.)

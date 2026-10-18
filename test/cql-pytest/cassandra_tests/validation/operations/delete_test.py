@@ -893,9 +893,9 @@ def testDeleteWithAStaticColumn(cql, test_keyspace, forceFlush):
         if forceFlush:
             flush(cql, table)
         assertRows(execute(cql, table, "SELECT * FROM %s"),
-                   row(1, 0, 0, null, null),
                    row(0, 0, 0, null, 0),
-                   row(0, 0, 1, null, 1))
+                   row(0, 0, 1, null, 1),
+                   row(1, 0, 0, null, null))
 
         assertInvalidMessage(cql, table, "Invalid restrictions on clustering columns since the DELETE statement modifies only static columns",
                              "DELETE staticValue FROM %s WHERE partitionKey = ? AND clustering_1 = ? AND clustering_2 = ?",

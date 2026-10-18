@@ -674,7 +674,8 @@ static value_set possible_lhs_values(const column_definition* cdef,
                                         const expression& expr,
                                         const query_options& options,
                                         const schema* table_schema_opt) {
-    const auto type = cdef ? &cdef->type->without_reversed() : long_type.get();
+    // Without a column, the LHS is token(): token values compare as the token type (blob).
+    const auto type = cdef ? &cdef->type->without_reversed() : dht::token::get_token_validator().get();
     return expr::visit(overloaded_functor{
             [] (const constant& constant_val) {
                 std::optional<bool> bool_val = get_bool_value(constant_val);
@@ -788,15 +789,15 @@ static value_set possible_lhs_values(const column_definition* cdef,
                             } else if (oper.op == oper_t::GTE) {
                                 return interval<managed_bytes>::make_starting_with(interval_bound(std::move(*val), inclusive));
                             }
-                            static const managed_bytes MININT = managed_bytes(serialized(std::numeric_limits<int64_t>::min())),
-                                    MAXINT = managed_bytes(serialized(std::numeric_limits<int64_t>::max()));
-                            // Undocumented feature: when the user types `token(...) < MININT`, we interpret
-                            // that as MAXINT for some reason.
-                            const auto adjusted_val = (*val == MININT) ? MAXINT : *val;
+                            // An empty token is the minimum token. Like upstream's
+                            // `token(...) < INT64_MIN`, `token(...) < 0x` means no upper bound.
+                            if (val->empty() && (oper.op == oper_t::LT || oper.op == oper_t::LTE)) {
+                                return unbounded_value_set;
+                            }
                             if (oper.op == oper_t::LT) {
-                                return interval<managed_bytes>::make_ending_with(interval_bound(std::move(adjusted_val), exclusive));
+                                return interval<managed_bytes>::make_ending_with(interval_bound(std::move(*val), exclusive));
                             } else if (oper.op == oper_t::LTE) {
-                                return interval<managed_bytes>::make_ending_with(interval_bound(std::move(adjusted_val), inclusive));
+                                return interval<managed_bytes>::make_ending_with(interval_bound(std::move(*val), inclusive));
                             }
                             throw std::logic_error(format("get_token_interval invalid operator {}", oper.op));
                         },

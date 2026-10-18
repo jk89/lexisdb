@@ -32,8 +32,8 @@ def testCreateTableWithSmallintColumns(cql, test_keyspace):
         execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", "2", short_max_value, short_min_value)
 
         assertRows(execute(cql, table, "SELECT * FROM %s"),
-                   ["2", short_max_value, short_min_value],
-                   ["1", 1, 2])
+                   ["1", 1, 2],
+                   ["2", short_max_value, short_min_value])
 
         # This cannot be tested in Python, it doesn't send the wrong types...
         #assertInvalidMessage(cql, table, "Expected 2 bytes for a smallint (4)",
@@ -49,8 +49,8 @@ def testCreateTinyintColumns(cql, test_keyspace):
         execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", "2", byte_max_value, byte_min_value)
 
         assertRows(execute(cql, table, "SELECT * FROM %s"),
-                   ["2", byte_max_value, byte_min_value],
-                   ["1", 1, 2])
+                   ["1", 1, 2],
+                   ["2", byte_max_value, byte_min_value])
 
         # This cannot be tested in Python, it doesn't send the wrong types...
         #assertInvalidMessage(cql, table, "Expected 1 byte for a tinyint (4)",
@@ -227,8 +227,8 @@ def testStaticTable(cql, test_keyspace):
                    [id1, 32, "Frodo", "Baggins"])
 
         assertRows(execute(cql, table, "SELECT * FROM %s"),
-                   [id2, 33, "Samwise", "Gamgee"],
-                   [id1, 32, "Frodo", "Baggins"]
+                   [id1, 32, "Frodo", "Baggins"],
+                   [id2, 33, "Samwise", "Gamgee"]
         )
 
         batch = "BEGIN BATCH " + \
@@ -241,8 +241,8 @@ def testStaticTable(cql, test_keyspace):
         execute(cql, table, batch, id1, 36, 37, id2, id1, id2)
 
         assertRows(execute(cql, table, "SELECT * FROM %s"),
-                   [id2, 37, None, None],
-                   [id1, 36, None, None])
+                   [id1, 36, None, None],
+                   [id2, 37, None, None])
 
 # Creation and basic operations on a composite table,
 # migrated from cql_tests.py:TestCQL.sparse_cf_test()

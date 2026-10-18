@@ -112,6 +112,14 @@ private:
 
     bool _partition_range_is_simple; ///< False iff _partition_range_restrictions imply a Cartesian product.
 
+    /// Ordered partitioning: partition key columns whose restrictions map to
+    /// contiguous token ranges -- leading columns restricted by EQ/IN, then at
+    /// most one column restricted by a slice. Empty when not applicable.
+    std::vector<const column_definition*> _pk_ordered_prefix;
+    const column_definition* _pk_ordered_slice = nullptr;
+    /// True iff every partition key restriction is in _pk_ordered_prefix / _pk_ordered_slice.
+    bool _pk_ordered_covers_all = false;
+
 
     check_indexes _check_indexes = check_indexes::yes;
 public:
@@ -260,6 +268,8 @@ private:
     void add_single_column_nonprimary_key_restriction(const expr::binary_operator& restr);
 
     void process_partition_key_restrictions(bool for_view, bool allow_filtering, statements::statement_type type);
+    void compute_pk_ordered_prefix();
+    dht::partition_range_vector get_pk_ordered_prefix_ranges(const query_options& options) const;
 
     /**
      * Processes the clustering column restrictions.
@@ -326,6 +336,12 @@ public:
     bool has_non_primary_key_restriction() const;
 
     bool pk_restrictions_need_filtering() const;
+
+    /// True iff the query's only restrictions are a partition key prefix/range
+    /// that ordered partitioning reads as contiguous token ranges. Such a query
+    /// still filters on the partition key (need_filtering() is true), but only
+    /// within those ranges, so it does not need ALLOW FILTERING.
+    bool is_ordered_partition_range_only() const;
 
     bool ck_restrictions_need_filtering() const;
 

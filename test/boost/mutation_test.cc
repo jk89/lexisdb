@@ -3830,11 +3830,12 @@ SEASTAR_TEST_CASE(test_tracing_format) {
     // scylla-dtest/tools/cdc_utils.py::CDCTraceInfoMatcher matches the
     // formatted token with "{key: pk(.*?), token:(.*)}", so let's make
     // sure we don't break it
-    dht::token token{42};
+    // Tokens are printed as hex bytes.
+    dht::token token(dht::token::kind::key, ::bytes({0x2a}));
     int8_t bytes[] = {0x01, 0x03, 0x00};
     dht::decorated_key key{token, partition_key::from_bytes(bytes)};
     std::string formatted = fmt::to_string(key);
-    BOOST_CHECK_EQUAL(formatted, "{key: pk{0103}, token: 42}");
+    BOOST_CHECK_EQUAL(formatted, "{key: pk{0103}, token: 2a}");
     return make_ready_future();
  }
 

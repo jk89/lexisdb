@@ -1151,6 +1151,16 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
         for (auto [table_id, resize_decision] : plan.resize_plan().resize) {
             co_await coroutine::maybe_yield();
             generate_resize_update(out, guard, table_id, resize_decision);
+            if (auto it = plan.resize_plan().split_points.find(table_id); it != plan.resize_plan().split_points.end()) {
+                const auto& tmap = get_token_metadata_ptr()->tablets().get_tablet_map(table_id);
+                for (const auto& [tid, split_point] : it->second) {
+                    co_await coroutine::maybe_yield();
+                    out.emplace_back(
+                        replica::tablet_mutation_builder(guard.write_timestamp(), table_id)
+                            .set_split_point(tmap.get_last_token(tid), split_point)
+                            .build());
+                }
+            }
         }
     }
 

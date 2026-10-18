@@ -96,6 +96,9 @@ using tablet_migration_info = locator::tablet_migration_info;
 /// table, and finalize or revoke the request previously initiated.
 struct table_resize_plan {
     std::unordered_map<table_id, locator::resize_decision> resize;
+    // For split decisions: the split points to pin, per tablet, chosen from
+    // the replicas' split hints. Tablets without an entry split at their midpoint.
+    std::unordered_map<table_id, std::unordered_map<locator::tablet_id, dht::token>> split_points;
     std::unordered_set<table_id> finalize_resize;
 
     size_t size() const { return resize.size() + finalize_resize.size(); }
@@ -104,6 +107,11 @@ struct table_resize_plan {
         for (auto&& [id, other_resize] : other.resize) {
             if (!resize.contains(id) || other_resize.sequence_number > resize[id].sequence_number) {
                 resize[id] = std::move(other_resize);
+                if (auto it = other.split_points.find(id); it != other.split_points.end()) {
+                    split_points[id] = std::move(it->second);
+                } else {
+                    split_points.erase(id);
+                }
             }
         }
         finalize_resize.merge(std::move(other.finalize_resize));

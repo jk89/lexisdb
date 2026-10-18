@@ -220,6 +220,9 @@ add_scylla_test(mvcc_test
   KIND SEASTAR)
 add_scylla_test(network_topology_strategy_test
   KIND SEASTAR)
+add_scylla_test(ordered_encoding_test
+  KIND BOOST
+  LIBRARIES dht)
 add_scylla_test(nonwrapping_interval_test
   KIND BOOST)
 add_scylla_test(observable_test

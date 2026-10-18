@@ -36,7 +36,7 @@ namespace sstables {
  * a key view via get_key().
  */
 template <typename T>
-int binary_search(const dht::i_partitioner& partitioner, const T& entries, const key& sk, const dht::token& token) {
+int binary_search(const schema& s, const T& entries, const key& sk, const dht::token& token) {
     int low = 0, mid = entries.size(), high = mid - 1;
     std::strong_ordering result = std::strong_ordering::less;
 
@@ -47,7 +47,7 @@ int binary_search(const dht::i_partitioner& partitioner, const T& entries, const
         // both parts of the comparison ourselves.
         mid = low + ((high - low) >> 1);
         key_view mid_key = entries[mid].get_key();
-        auto mid_token = partitioner.get_token(mid_key);
+        auto mid_token = s.get_partitioner().get_token(s, mid_key);
 
         if (token == mid_token) {
             result = sk.tri_compare(mid_key);
@@ -68,8 +68,8 @@ int binary_search(const dht::i_partitioner& partitioner, const T& entries, const
 }
 
 template <typename T>
-int binary_search(const dht::i_partitioner& partitioner, const T& entries, const key& sk) {
-    return binary_search(partitioner, entries, sk, partitioner.get_token(key_view(sk)));
+int binary_search(const schema& s, const T& entries, const key& sk) {
+    return binary_search(s, entries, sk, s.get_partitioner().get_token(s, key_view(sk)));
 }
 
 }

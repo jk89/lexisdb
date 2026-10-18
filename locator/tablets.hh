@@ -276,12 +276,22 @@ struct resize_decision {
     seq_number_t next_sequence_number() const;
 };
 
+// A replica's suggestion of where to split a tablet: a token near the middle
+// of the tablet's data, and how many bytes of data it was sampled from.
+struct tablet_split_hint {
+    dht::token token;
+    uint64_t weight = 0;
+};
+
 struct table_load_stats {
     uint64_t size_in_bytes = 0;
     // Stores the minimum seq number among all replicas, as coordinator wants to know if
     // all replicas have completed splitting, which happens when they all store the
     // seq number of the current split decision.
     resize_decision::seq_number_t split_ready_seq_number = std::numeric_limits<resize_decision::seq_number_t>::max();
+    // Split hint per tablet id. When stats are combined, the hint sampled
+    // from the most data wins.
+    std::unordered_map<uint64_t, tablet_split_hint> split_hints;
 
     table_load_stats& operator+=(const table_load_stats& s) noexcept;
     friend table_load_stats operator+(table_load_stats a, const table_load_stats& b) {
@@ -303,6 +313,9 @@ using load_stats_ptr = lw_shared_ptr<const load_stats>;
 /// Stores information about tablets of a single table.
 ///
 /// The map contains a constant number of tablets, tablet_count().
+/// Tablet boundaries are explicit: tablet i owns (last_token(i - 1), last_token(i)],
+/// with the first tablet starting after minimum_token() and the last tablet
+/// ending at maximum_token().
 /// Each tablet has an associated tablet_info, and an optional tablet_transition_info.
 /// Any given token is owned by exactly one tablet in this map.
 ///
@@ -319,19 +332,23 @@ class tablet_map {
 public:
     using tablet_container = utils::chunked_vector<tablet_info>;
 private:
-    // The implementation assumes that _tablets.size() is a power of 2:
-    //
-    //   _tablets.size() == 1 << _log2_tablets
-    //
     tablet_container _tablets;
-    size_t _log2_tablets; // log_2(_tablets.size())
+    // Sorted. _last_tokens[i] is the last token owned by tablet i;
+    // _last_tokens.back() is maximum_token().
+    utils::chunked_vector<dht::token> _last_tokens;
+    // Split points chosen from data when a split was decided. Kept until the
+    // split is finalized, because replicas split their storage by them.
+    std::unordered_map<tablet_id, dht::token> _split_points;
     std::unordered_map<tablet_id, tablet_transition_info> _transitions;
     resize_decision _resize_decision;
 public:
-    /// Constructs a tablet map.
-    ///
-    /// \param tablet_count The desired tablets to allocate. Must be a power of two.
+    /// Constructs a tablet map with tablet_count tablets spread evenly over
+    /// the token space.
     explicit tablet_map(size_t tablet_count);
+
+    /// Constructs a tablet map with the given tablet boundaries.
+    /// \param last_tokens Sorted last tokens, one per tablet; the last one must be maximum_token().
+    explicit tablet_map(utils::chunked_vector<dht::token> last_tokens);
 
     /// Returns tablet_id of a tablet which owns a given token.
     tablet_id get_tablet_id(token) const;
@@ -351,6 +368,22 @@ public:
     /// Returns the largest token owned by a given tablet.
     /// \throws std::logic_error If the given id does not belong to this instance.
     dht::token get_last_token(tablet_id id) const;
+
+    /// Returns the token at which a given tablet is split: after a split, the
+    /// left tablet owns (first, split point] and the right one the rest.
+    /// This is the pinned split point if one is set and lies strictly inside
+    /// the tablet's range, otherwise the midpoint of the range.
+    /// get_tablet_id_and_range_side() and split_layout() agree on it.
+    dht::token get_split_point(tablet_id id) const;
+
+    /// Returns the sorted last tokens of all tablets.
+    const utils::chunked_vector<dht::token>& last_tokens() const {
+        return _last_tokens;
+    }
+
+    /// Returns a map with twice the tablets, every tablet split at its split
+    /// point. Tablet i becomes tablets 2i and 2i+1. Tablet infos are not copied.
+    tablet_map split_layout() const;
 
     /// Returns the smallest token owned by a given tablet.
     /// \throws std::logic_error If the given id does not belong to this instance.
@@ -430,6 +463,15 @@ public:
     const locator::resize_decision& resize_decision() const;
 public:
     void set_tablet(tablet_id, tablet_info);
+    /// Pins the split point of a tablet (see get_split_point()). Ignored by
+    /// get_split_point() unless strictly inside the tablet's range.
+    void set_split_point(tablet_id, dht::token);
+    void clear_split_point(tablet_id);
+    /// Returns the pinned split point of a tablet, if any.
+    const dht::token* get_pinned_split_point(tablet_id) const;
+    /// Sets the last token of a tablet. Used when loading persisted boundaries;
+    /// the caller must keep the boundaries sorted.
+    void set_last_token(tablet_id, dht::token);
     void set_tablet_transition_info(tablet_id, tablet_transition_info);
     void set_resize_decision(locator::resize_decision);
     void clear_tablet_transition_info(tablet_id);

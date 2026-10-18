@@ -2326,6 +2326,37 @@ table::table(schema_ptr schema, config config, lw_shared_ptr<const storage_optio
     set_metrics();
 }
 
+// Samples a split point for a tablet from its sstables: each sstable contributes
+// the middle key of its summary, weighted by its data size, and the weighted
+// median of those keys is returned. Cost is O(sstables), not O(data).
+static std::optional<locator::tablet_split_hint> sample_split_hint(const storage_group& sg) {
+    std::vector<std::pair<dht::token, uint64_t>> samples;
+    uint64_t total = 0;
+    sg.for_each_compaction_group([&] (const compaction_group_ptr& cg) {
+        cg->main_sstables()->for_each_sstable([&] (const sstables::shared_sstable& sst) {
+            const auto& entries = sst->get_summary().entries;
+            if (entries.empty()) {
+                return;
+            }
+            auto weight = sst->data_size();
+            samples.emplace_back(entries[entries.size() / 2].get_token(), weight);
+            total += weight;
+        });
+    });
+    if (samples.empty() || total == 0) {
+        return std::nullopt;
+    }
+    std::sort(samples.begin(), samples.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+    uint64_t acc = 0;
+    for (auto& [token, weight] : samples) {
+        acc += weight;
+        if (acc * 2 >= total) {
+            return locator::tablet_split_hint{std::move(token), total};
+        }
+    }
+    return locator::tablet_split_hint{std::move(samples.back().first), total};
+}
+
 locator::table_load_stats tablet_storage_group_manager::table_load_stats(std::function<bool(const locator::tablet_map&, locator::global_tablet_id)> tablet_filter) const noexcept {
     locator::table_load_stats stats;
     stats.split_ready_seq_number = _split_ready_seq_number;
@@ -2334,6 +2365,13 @@ locator::table_load_stats tablet_storage_group_manager::table_load_stats(std::fu
         locator::global_tablet_id gid { _t.schema()->id(), locator::tablet_id(id) };
         if (tablet_filter(*_tablet_map, gid)) {
             stats.size_in_bytes += sg.live_disk_space_used();
+            try {
+                if (auto hint = sample_split_hint(sg)) {
+                    stats.split_hints.emplace(id, std::move(*hint));
+                }
+            } catch (...) {
+                // Hints are advisory; on allocation failure the split falls back to the midpoint.
+            }
         }
     });
     return stats;

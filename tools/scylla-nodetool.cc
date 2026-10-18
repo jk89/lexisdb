@@ -1425,8 +1425,9 @@ void repair_operation(scylla_rest_client& client, const bpo::variables_map& vm) 
     }
 
     if (vm.contains("start-token") || vm.contains("end-token")) {
-        const auto st = vm.contains("start-token") ? fmt::to_string(vm["start-token"].as<uint64_t>()) : "";
-        const auto et = vm.contains("end-token") ? fmt::to_string(vm["end-token"].as<uint64_t>()) : "";
+        // Tokens are hex-encoded ordered tokens; pass them through as given.
+        const auto st = vm.contains("start-token") ? vm["start-token"].as<sstring>() : sstring();
+        const auto et = vm.contains("end-token") ? vm["end-token"].as<sstring>() : sstring();
         repair_params["ranges"] = seastar::format("{}:{}", st, et);
     }
 
@@ -3841,7 +3842,7 @@ For more information, see: {}"
 )", doc_link("operating-scylla/nodetool-commands/repair.html")),
                 {
                     typed_option<>("dc-parallel", "Repair datacenters in parallel"),
-                    typed_option<uint64_t>("end-token", "Repair data up to this token"),
+                    typed_option<sstring>("end-token", "Repair data up to this token (hex-encoded)"),
                     typed_option<>("full", "Issue a full repair, as opposed to an incremental one; note that repairs on ScyllaDB are always full"),
                     typed_option<std::vector<sstring>>("in-dc", "Constrain repair to specific datacenter(s)"),
                     typed_option<>("in-local-dc", "Constrain repair to the local datacenter only"),
@@ -3851,7 +3852,7 @@ For more information, see: {}"
                     typed_option<>("partitioner-range", "Repair only the first range returned by the partitioner"),
                     typed_option<>("pull", "Fix local node only"),
                     typed_option<>("sequential", "Perform repair sequentially"),
-                    typed_option<uint64_t>("start-token", "Repair data starting from this token"),
+                    typed_option<sstring>("start-token", "Repair data starting from this token (hex-encoded)"),
                     typed_option<>("trace", "Trace repair, traces are stored in system.traces"),
                 },
                 {

@@ -281,9 +281,9 @@ def generate_compdb(compdb, ninja, buildfile, modes):
         if os.path.exists(compdb_target):
             try:
                 os.symlink(compdb_target, compdb)
-            except FileExistsError:
+            except (FileExistsError, OSError):
                 # if there is already a valid compile_commands.json link in the
-                # source root, we are done.
+                # source root, or if symlinks are not supported, we are done.
                 pass
             return
 
@@ -536,6 +536,7 @@ scylla_tests = set([
     'test/boost/mvcc_test',
     'test/boost/network_topology_strategy_test',
     'test/boost/nonwrapping_interval_test',
+    'test/boost/ordered_encoding_test',
     'test/boost/observable_test',
     'test/boost/partitioner_test',
     'test/boost/per_partition_rate_limit_test',
@@ -1059,7 +1060,8 @@ scylla_core = (['message/messaging_service.cc',
                 'gms/inet_address.cc',
                 'dht/i_partitioner.cc',
                 'dht/token.cc',
-                'dht/murmur3_partitioner.cc',
+                'dht/ordered_partitioner.cc',
+                'dht/ordered_encoding.cc',
                 'dht/boot_strapper.cc',
                 'dht/range_streamer.cc',
                 'unimplemented.cc',
@@ -1330,6 +1332,7 @@ scylla_tests_dependencies = scylla_core + alternator + idls + scylla_tests_gener
     'test/lib/result_set_assertions.cc',
     'test/lib/mutation_source_test.cc',
     'test/lib/sstable_utils.cc',
+    'test/lib/murmur3_partitioner.cc',
     'test/lib/data_model.cc',
     'test/lib/exception_utils.cc',
     'test/lib/random_schema.cc',
@@ -2547,9 +2550,9 @@ def configure_using_cmake(args):
     
     try:
         os.symlink(compdb_target, compdb_source)
-    except FileExistsError:
+    except (FileExistsError, OSError):
         # if there is already a valid compile_commands.json link in the
-        # source root, we are done.
+        # source root, or if symlinks are not supported, we are done.
         pass
 
 

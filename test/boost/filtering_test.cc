@@ -157,18 +157,18 @@ SEASTAR_TEST_CASE(test_allow_filtering_pk_ck) {
                 int32_type->decompose(18),
             },
             {
-                int32_type->decompose(31),
-                int32_type->decompose(32),
-                int32_type->decompose(33),
-                int32_type->decompose(34),
-                int32_type->decompose(35),
-            },
-            {
                 int32_type->decompose(21),
                 int32_type->decompose(22),
                 int32_type->decompose(23),
                 int32_type->decompose(24),
                 int32_type->decompose(25),
+            },
+            {
+                int32_type->decompose(31),
+                int32_type->decompose(32),
+                int32_type->decompose(33),
+                int32_type->decompose(34),
+                int32_type->decompose(35),
             }
         });
 
@@ -681,13 +681,6 @@ SEASTAR_TEST_CASE(test_allow_filtering_with_secondary_index) {
             assert_that(msg).is_rows().with_rows({
                 {
                     int32_type->decompose(1),
-                    int32_type->decompose(3),
-                    int32_type->decompose(3),
-                    int32_type->decompose(3),
-                    int32_type->decompose(3)
-                },
-                {
-                    int32_type->decompose(1),
                     int32_type->decompose(1),
                     int32_type->decompose(1),
                     int32_type->decompose(3),
@@ -696,6 +689,13 @@ SEASTAR_TEST_CASE(test_allow_filtering_with_secondary_index) {
                 {
                     int32_type->decompose(1),
                     int32_type->decompose(1),
+                    int32_type->decompose(3),
+                    int32_type->decompose(3),
+                    int32_type->decompose(3)
+                },
+                {
+                    int32_type->decompose(1),
+                    int32_type->decompose(3),
                     int32_type->decompose(3),
                     int32_type->decompose(3),
                     int32_type->decompose(3)
@@ -713,14 +713,14 @@ SEASTAR_TEST_CASE(test_allow_filtering_with_secondary_index) {
             assert_that(msg).is_rows().with_rows({
                 {
                     int32_type->decompose(1),
-                    int32_type->decompose(3),
+                    int32_type->decompose(1),
                     int32_type->decompose(3),
                     int32_type->decompose(3),
                     int32_type->decompose(3)
                 },
                 {
                     int32_type->decompose(1),
-                    int32_type->decompose(1),
+                    int32_type->decompose(3),
                     int32_type->decompose(3),
                     int32_type->decompose(3),
                     int32_type->decompose(3)
@@ -744,13 +744,6 @@ SEASTAR_TEST_CASE(test_allow_filtering_with_secondary_index) {
             assert_that(msg).is_rows().with_rows({
                 {
                     int32_type->decompose(2),
-                    int32_type->decompose(2),
-                    int32_type->decompose(2),
-                    int32_type->decompose(2),
-                    int32_type->decompose(2)
-                },
-                {
-                    int32_type->decompose(2),
                     int32_type->decompose(1),
                     int32_type->decompose(1),
                     int32_type->decompose(2),
@@ -759,6 +752,13 @@ SEASTAR_TEST_CASE(test_allow_filtering_with_secondary_index) {
                 {
                     int32_type->decompose(2),
                     int32_type->decompose(1),
+                    int32_type->decompose(2),
+                    int32_type->decompose(2),
+                    int32_type->decompose(2)
+                },
+                {
+                    int32_type->decompose(2),
+                    int32_type->decompose(2),
                     int32_type->decompose(2),
                     int32_type->decompose(2),
                     int32_type->decompose(2)
@@ -1146,8 +1146,10 @@ SEASTAR_TEST_CASE(test_filtering) {
         //test filtering with count
         {
             auto msg = e.execute_cql("SELECT COUNT(k) FROM cf WHERE n>3 ALLOW FILTERING;").get();
+            // The extra (filtering) column holds n of the first matching row; in
+            // partition key order (Lexis) that is k=10, with n=4.
             assert_that(msg).is_rows().with_serialized_columns_count(1).with_size(1).with_rows_ignore_order({
-                { long_type->decompose(4L), int32_type->decompose(5) },
+                { long_type->decompose(4L), int32_type->decompose(4) },
             });
         }
 

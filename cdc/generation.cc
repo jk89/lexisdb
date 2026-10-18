@@ -181,13 +181,42 @@ utils::chunked_vector<token_range_description>&& topology_description::entries()
     return std::move(_entries);
 }
 
+// Stream ids embed a 64-bit token, so the search runs over the 64-bit token
+// space (dht::token::from_int64()/to_int64()), as ScyllaDB did before ordered
+// tokens: every candidate is a bias() boundary that a stream id can hold.
+// dht::find_first_token_for_shard() would return start.next(), which is
+// closer to start but has no 64-bit representation.
+static dht::token find_first_int64_token_for_shard_in_not_wrap_around_range(
+        const dht::static_sharder& sharder, dht::token start, dht::token end, size_t shard_idx) {
+    // Invariant start < end, so start is not the largest 64-bit token.
+    auto t = dht::token::from_int64(dht::token::to_int64(start) + 1);
+    if (sharder.shard_of(t) != shard_idx) {
+        t = sharder.token_for_next_shard(t, shard_idx);
+    }
+    return std::min(t, end);
+}
+
+static dht::token find_first_int64_token_for_shard(
+        const dht::static_sharder& sharder, dht::token start, dht::token end, size_t shard_idx) {
+    if (start < end) {
+        return find_first_int64_token_for_shard_in_not_wrap_around_range(sharder, start, end, shard_idx);
+    }
+    if (dht::token::to_int64(start) != std::numeric_limits<int64_t>::max()) {
+        auto t = find_first_int64_token_for_shard_in_not_wrap_around_range(sharder, start, dht::maximum_token(), shard_idx);
+        if (!t.is_maximum()) {
+            return t;
+        }
+    }
+    return find_first_int64_token_for_shard_in_not_wrap_around_range(sharder, dht::minimum_token(), end, shard_idx);
+}
+
 static std::vector<stream_id> create_stream_ids(
         size_t index, dht::token start, dht::token end, size_t shard_count, uint8_t ignore_msb) {
     std::vector<stream_id> result;
     result.reserve(shard_count);
     dht::static_sharder sharder(shard_count, ignore_msb);
     for (size_t shard_idx = 0; shard_idx < shard_count; ++shard_idx) {
-        auto t = dht::find_first_token_for_shard(sharder, start, end, shard_idx);
+        auto t = find_first_int64_token_for_shard(sharder, start, end, shard_idx);
         // compose the id from token and the "index" of the range end owning vnode
         // as defined by token sort order. Basically grouping within this
         // shard set.

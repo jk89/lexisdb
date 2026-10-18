@@ -150,8 +150,9 @@ def test_allow_filtering_clustering_key_token_range(cql, table1):
     # TODO: the current implementation of check_af_mandatory() doesn't know
     # how to request or compare results with the token, so we pass None to
     # so it only checks that ALLOW FILTERING is mandatory.
-    check_af_mandatory(cql, table1, 'c=2 AND token(k) > 123', None)
-    check_af_mandatory(cql, table1, 'c=2 AND token(k) > 123 AND token(k) < 200', None)
+    # Tokens are blobs (the ordered encoding of the partition key).
+    check_af_mandatory(cql, table1, 'c=2 AND token(k) > 0x7b', None)
+    check_af_mandatory(cql, table1, 'c=2 AND token(k) > 0x7b AND token(k) < 0xc8', None)
 
 # In the above test we noted that filtering by clustering key in a
 # potentially large subset of the partitions (a token range) also needs
@@ -163,13 +164,15 @@ def test_allow_filtering_clustering_key_token_range(cql, table1):
 # is guaranteed to match just one partition, doesn't need ALLOW FILTERING.
 # Reproduces issue #7608.
 def test_allow_filtering_clustering_key_token_specific(cql, table1):
-    check_af_mandatory(cql, table1, 'c=2 AND token(k) = 123', None)
+    check_af_mandatory(cql, table1, 'c=2 AND token(k) = 0x7b', None)
     check_af_optional(cql, table1, 'c=2 AND k = 123', None)
 
-# A restriction on the partition key other than equality requires filtering.
+# Under ordered partitioning (Lexis), a range on the partition key is a
+# contiguous token range, so it does not require filtering. (In Scylla and
+# Cassandra with hash partitioning it does.)
 def test_allow_filtering_partition_key(cql, table1):
     check_af_optional(cql, table1, 'k=2', lambda row: row.k==2)
-    check_af_mandatory(cql, table1, 'k>2', lambda row: row.k>2)
+    check_af_optional(cql, table1, 'k>2', lambda row: row.k>2)
 
 # A utility function for waiting for a secondary index to become up-
 # up-to-date (this may not be immediate).
@@ -291,7 +294,10 @@ def test_allow_filtering_indexed_two_indexes(cql, table3):
 # the searched columns are not a full partition key, or not a prefix
 # of the clustering key.
 def test_allow_filtering_prefix(cql, table3):
-    check_af_mandatory(cql, table3, 'k1=1', lambda row: row.k1==1)
+    # Under ordered partitioning (Lexis), the partitions with a given leading
+    # partition key column are a contiguous token range, so 'k1=1' needs no
+    # filtering; restricting only a later column still does.
+    check_af_optional(cql, table3, 'k1=1', lambda row: row.k1==1)
     check_af_mandatory(cql, table3, 'k2=1', lambda row: row.k2==1)
     check_af_optional(cql, table3, 'k1=1 AND k2=1', lambda row: row.k1==1 and row.k2 ==1)
     check_af_optional(cql, table3, 'k1=1 AND k2=1 AND c1=10', lambda row: row.k1==1 and row.k2==1 and row.c1==10)

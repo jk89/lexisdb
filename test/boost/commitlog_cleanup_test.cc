@@ -58,8 +58,9 @@ SEASTAR_TEST_CASE(test_canonical_token_range) {
                 arbitrary_token + 1,
                 std::numeric_limits<int64_t>::max(),
             }) {
-                bool in_tr = orig.contains(dht::token::from_int64(t), dht::token_comparator());
-                bool in_canon = t > canon.first && t <= canon.second;
+                auto tok = dht::token::from_int64(t);
+                bool in_tr = orig.contains(tok, dht::token_comparator());
+                bool in_canon = canon.first <= tok && tok < canon.second;
                 BOOST_REQUIRE_EQUAL(in_tr, in_canon);
             }
         }
@@ -98,7 +99,7 @@ SEASTAR_TEST_CASE(test_commitlog_cleanup_records) {
         BOOST_REQUIRE(local_map != map.end());
 
         auto get_rp = [&] (int64_t t) -> std::optional<db::replay_position> {
-            return local_map->second.get(t);
+            return local_map->second.get(dht::token::from_int64(t));
         };
         // Check that the resulting map is as we expect.
         BOOST_REQUIRE(get_rp(-2) == std::nullopt);

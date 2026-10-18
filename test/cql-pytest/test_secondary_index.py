@@ -1629,7 +1629,8 @@ def test_index_filter_by_token(cql, test_keyspace):
         # Check that the token(p) > .. restriction works (yielding just
         # a subset of base_results) and also the v = ... works together
         # (v=1 yields the data, v=0 yields nothing).
-        token3 = base_results[3].system_token_p
+        # Tokens are blobs (the ordered encoding of the partition key).
+        token3 = '0x' + base_results[3].system_token_p.hex()
         assert base_results[4:] == list(cql.execute(f"SELECT token(p), p FROM {table} WHERE v = 1 AND token(p) > {token3}"))
         assert [] == list(cql.execute(f"SELECT token(p), p FROM {table} WHERE v = 0 AND token(p) > {token3}"))
 

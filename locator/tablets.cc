@@ -257,12 +257,34 @@ bool tablet_metadata::operator==(const tablet_metadata& o) const {
     return true;
 }
 
-tablet_map::tablet_map(size_t tablet_count)
-        : _log2_tablets(log2ceil(tablet_count)) {
-    if (tablet_count != 1ul << _log2_tablets) {
-        on_internal_error(tablet_logger, format("Tablet count not a power of 2: {}", tablet_count));
+static utils::chunked_vector<dht::token> even_last_tokens(size_t tablet_count) {
+    if (tablet_count == 0) {
+        on_internal_error(tablet_logger, "Tablet count must be positive");
     }
-    _tablets.resize(tablet_count);
+    // Tablet i ends where the 64-bit projection of the token space reaches (i + 1) / tablet_count.
+    utils::chunked_vector<dht::token> last_tokens;
+    last_tokens.reserve(tablet_count);
+    for (size_t i = 0; i + 1 < tablet_count; ++i) {
+        auto n = uint64_t(((unsigned __int128)(i + 1) << 64) / tablet_count);
+        last_tokens.push_back(dht::token::bias(n));
+    }
+    last_tokens.push_back(dht::maximum_token());
+    return last_tokens;
+}
+
+tablet_map::tablet_map(size_t tablet_count)
+        : tablet_map(even_last_tokens(tablet_count)) {
+}
+
+tablet_map::tablet_map(utils::chunked_vector<dht::token> last_tokens)
+        : _last_tokens(std::move(last_tokens)) {
+    if (_last_tokens.empty() || !_last_tokens.back().is_maximum()) {
+        on_internal_error(tablet_logger, "Tablet boundaries must end with maximum_token()");
+    }
+    if (!std::is_sorted(_last_tokens.begin(), _last_tokens.end())) {
+        on_internal_error(tablet_logger, "Tablet boundaries must be sorted");
+    }
+    _tablets.resize(_last_tokens.size());
 }
 
 void tablet_map::check_tablet_id(tablet_id id) const {
@@ -277,18 +299,59 @@ const tablet_info& tablet_map::get_tablet_info(tablet_id id) const {
 }
 
 tablet_id tablet_map::get_tablet_id(token t) const {
-    return tablet_id(dht::compaction_group_of(_log2_tablets, t));
+    // The owner is the first tablet whose last token is not below t.
+    auto it = std::lower_bound(_last_tokens.begin(), _last_tokens.end(), t);
+    return tablet_id(std::distance(_last_tokens.begin(), it));
 }
 
 std::pair<tablet_id, tablet_range_side> tablet_map::get_tablet_id_and_range_side(token t) const {
-    auto id_after_split = dht::compaction_group_of(_log2_tablets + 1, t);
-    auto current_id = id_after_split >> 1;
-    return {tablet_id(current_id), tablet_range_side(id_after_split & 0x1)};
+    auto id = get_tablet_id(t);
+    auto side = t <= get_split_point(id) ? tablet_range_side::left : tablet_range_side::right;
+    return {id, side};
 }
 
 dht::token tablet_map::get_last_token(tablet_id id) const {
     check_tablet_id(id);
-    return dht::last_token_of_compaction_group(_log2_tablets, size_t(id));
+    return _last_tokens[size_t(id)];
+}
+
+dht::token tablet_map::get_split_point(tablet_id id) const {
+    check_tablet_id(id);
+    auto start = id == first_tablet() ? dht::minimum_token() : _last_tokens[size_t(id) - 1];
+    const auto& last = _last_tokens[size_t(id)];
+    if (auto it = _split_points.find(id); it != _split_points.end() && start < it->second && it->second < last) {
+        return it->second;
+    }
+    return dht::token::midpoint(start, last);
+}
+
+void tablet_map::set_split_point(tablet_id id, dht::token t) {
+    check_tablet_id(id);
+    _split_points.insert_or_assign(id, std::move(t));
+}
+
+void tablet_map::clear_split_point(tablet_id id) {
+    _split_points.erase(id);
+}
+
+const dht::token* tablet_map::get_pinned_split_point(tablet_id id) const {
+    auto it = _split_points.find(id);
+    return it == _split_points.end() ? nullptr : &it->second;
+}
+
+tablet_map tablet_map::split_layout() const {
+    utils::chunked_vector<dht::token> last_tokens;
+    last_tokens.reserve(_last_tokens.size() * 2);
+    for (size_t i = 0; i < _last_tokens.size(); ++i) {
+        last_tokens.push_back(get_split_point(tablet_id(i)));
+        last_tokens.push_back(_last_tokens[i]);
+    }
+    return tablet_map(std::move(last_tokens));
+}
+
+void tablet_map::set_last_token(tablet_id id, dht::token t) {
+    check_tablet_id(id);
+    _last_tokens[size_t(id)] = std::move(t);
 }
 
 dht::token tablet_map::get_first_token(tablet_id id) const {
@@ -376,7 +439,8 @@ bool tablet_map::has_replica(tablet_id tid, tablet_replica r) const {
 }
 
 future<> tablet_map::clear_gently() {
-    return utils::clear_gently(_tablets);
+    co_await utils::clear_gently(_last_tokens);
+    co_await utils::clear_gently(_tablets);
 }
 
 const tablet_transition_info* tablet_map::get_tablet_transition_info(tablet_id id) const {
@@ -448,9 +512,12 @@ tablet_transition_kind tablet_transition_kind_from_string(const sstring& name) {
 }
 
 size_t tablet_map::external_memory_usage() const {
-    size_t result = _tablets.external_memory_usage();
+    size_t result = _tablets.external_memory_usage() + _last_tokens.external_memory_usage();
     for (auto&& tablet : _tablets) {
         result += tablet.replicas.external_memory_usage();
+    }
+    for (auto&& t : _last_tokens) {
+        result += t.external_memory_usage();
     }
     return result;
 }
@@ -502,6 +569,16 @@ resize_decision::seq_number_t resize_decision::next_sequence_number() const {
 table_load_stats& table_load_stats::operator+=(const table_load_stats& s) noexcept {
     size_in_bytes = size_in_bytes + s.size_in_bytes;
     split_ready_seq_number = std::min(split_ready_seq_number, s.split_ready_seq_number);
+    try {
+        for (const auto& [id, hint] : s.split_hints) {
+            auto [it, inserted] = split_hints.try_emplace(id, hint);
+            if (!inserted && hint.weight > it->second.weight) {
+                it->second = hint;
+            }
+        }
+    } catch (...) {
+        // Hints are advisory; on allocation failure the split falls back to midpoints.
+    }
     return *this;
 }
 

@@ -4415,7 +4415,8 @@ BOOST_AUTO_TEST_CASE(prepare_token_func_without_receiver) {
 
     expression prepared_no_receiver = prepare_expression(token_fun_call, db, "test_ks", table_schema.get(), nullptr);
     expression prepared_with_receiver =
-        prepare_expression(token_fun_call, db, "test_ks", table_schema.get(), make_receiver(long_type));
+        // token() returns a blob: the order-preserving encoding of the key.
+        prepare_expression(token_fun_call, db, "test_ks", table_schema.get(), make_receiver(bytes_type));
 
     auto check_prepared = [&](const expression& prepared) {
         const function_call* prepared_token = as_if<function_call>(&prepared);

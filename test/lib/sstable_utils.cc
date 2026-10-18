@@ -11,7 +11,7 @@
 #include "replica/database.hh"
 #include "replica/memtable-sstable.hh"
 #include "dht/i_partitioner.hh"
-#include "dht/murmur3_partitioner.hh"
+#include "dht/ordered_partitioner.hh"
 #include <boost/range/irange.hpp>
 #include <boost/range/adaptor/reversed.hpp>
 #include "sstables/version.hh"

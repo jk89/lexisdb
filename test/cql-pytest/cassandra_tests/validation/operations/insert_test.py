@@ -144,15 +144,15 @@ def testInsertWithAStaticColumn(cql, test_keyspace, forceFlush):
             flush(cql, table)
 
         assertRows(execute(cql, table, "SELECT * FROM %s"),
-                   row(1, null, null, "B", null),
-                   row(0, 0, 0, "A", null))
+                   row(0, 0, 0, "A", null),
+                   row(1, null, null, "B", null))
 
         execute(cql, table, "INSERT INTO %s (partitionKey, clustering_1, clustering_2, value) VALUES (1, 0, 0, 0)")
         if forceFlush:
             flush(cql, table)
         assertRows(execute(cql, table, "SELECT * FROM %s"),
-                   row(1, 0, 0, "B", 0),
-                   row(0, 0, 0, "A", null))
+                   row(0, 0, 0, "A", null),
+                   row(1, 0, 0, "B", 0))
 
         # Missing primary key columns
         assertInvalidMessageRE(cql, table, "[Mm]issing.*partitionkey",

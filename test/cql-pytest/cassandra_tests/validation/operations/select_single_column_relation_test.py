@@ -169,10 +169,21 @@ def testPartitionKeyColumnRelations(cql, test_keyspace):
                    ["second", 1, 1, 1],
                    ["second", 4, 4, 4])
 
-        assert_invalid_message(cql, table, REQUIRES_ALLOW_FILTERING_MESSAGE,
-                             "select * from %s where a in (?, ?)", "first", "second")
-        assert_invalid_message(cql, table, REQUIRES_ALLOW_FILTERING_MESSAGE,
-                             "select * from %s where a = ?", "first")
+        # Under ordered partitioning (Lexis), the partitions with given
+        # leading partition key column values are contiguous token ranges, so
+        # these need no filtering.
+        assert_rows(execute(cql, table, "select * from %s where a in (?, ?)", "first", "second"),
+                   ["first", 1, 1, 1],
+                   ["first", 2, 2, 2],
+                   ["first", 3, 3, 3],
+                   ["first", 4, 4, 4],
+                   ["second", 1, 1, 1],
+                   ["second", 4, 4, 4])
+        assert_rows(execute(cql, table, "select * from %s where a = ?", "first"),
+                   ["first", 1, 1, 1],
+                   ["first", 2, 2, 2],
+                   ["first", 3, 3, 3],
+                   ["first", 4, 4, 4])
         # Scylla does allow such queries, and their correctness is tested in
         # test_filtering.py::test_multiple_restrictions_on_same_column
         #assert_invalid_message(cql, table, "b cannot be restricted by more than one relation if it includes a IN",
@@ -520,13 +531,16 @@ def testWithUnsetValues(cql, test_keyspace):
 
 def testInvalidSliceRestrictionOnPartitionKey(cql, test_keyspace):
     with create_table(cql, test_keyspace, "(a int PRIMARY KEY, b int, c text)") as table:
-        # Scylla and Cassandra choose to print a different error message
-        # here: Cassandra tells you this query would have worked with
-        # ALLOW FILTERING, while Scylla *also* tells you that this
-        # query would have worked with EQ or IN relations or with token().
-        # The word "filtering" is common to both messages.
-        assert_invalid_message(cql, table, 'FILTERING',
-                             "SELECT * FROM %s WHERE a >= 1 and a < 4")
+        # Under ordered partitioning (Lexis), a slice on the partition key is
+        # a contiguous token range, so this is a valid query (in Scylla and
+        # Cassandra with hash partitioning it needs ALLOW FILTERING).
+        execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", 0, 0, "zero")
+        execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", 1, 1, "one")
+        execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", 3, 3, "three")
+        execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", 4, 4, "four")
+        assert_rows(execute(cql, table, "SELECT * FROM %s WHERE a >= 1 and a < 4"),
+                   [1, 1, "one"],
+                   [3, 3, "three"])
         # Again, different error messages. Cassandra says "Multi-column
         # relations can only be applied to clustering columns but was
         # applied to: a", Scylla says "Only EQ and IN relation are supported

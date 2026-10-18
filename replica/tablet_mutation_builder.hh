@@ -21,7 +21,7 @@ class tablet_mutation_builder {
     mutation _m;
 private:
     clustering_key get_ck(dht::token last_token) {
-        return clustering_key::from_single_value(*_s, data_value(dht::token::to_int64(last_token)).serialize_nonnull());
+        return clustering_key::from_single_value(*_s, data_value(last_token.to_tagged_bytes()).serialize_nonnull());
     }
 public:
     tablet_mutation_builder(api::timestamp_type ts, table_id table)
@@ -40,6 +40,7 @@ public:
     tablet_mutation_builder& del_session(dht::token last_token);
     tablet_mutation_builder& del_transition(dht::token last_token);
     tablet_mutation_builder& set_resize_decision(locator::resize_decision);
+    tablet_mutation_builder& set_split_point(dht::token last_token, const dht::token& split_point);
 
     mutation build() {
         return std::move(_m);

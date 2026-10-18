@@ -35,7 +35,7 @@ SEASTAR_TEST_CASE(test_secondary_index_regular_column_query) {
         co_await e.execute_cql("INSERT INTO users (userid, name, email, country) VALUES (3, 'Channa Devote', 'cdevote14@marriott.com', 'Denmark');");
 
         shared_ptr<cql_transport::messages::result_message> msg = co_await e.execute_cql("SELECT email FROM users WHERE country = 'France';");
-        assert_that(msg).is_rows().with_rows({
+        assert_that(msg).is_rows().with_rows_ignore_order({
             { utf8_type->decompose(sstring("dcurrorw@techcrunch.com")) },
             { utf8_type->decompose(sstring("beassebyv@house.gov")) },
         });
@@ -69,7 +69,7 @@ SEASTAR_TEST_CASE(test_secondary_index_clustering_key_query) {
         co_await e.execute_cql("INSERT INTO users (userid, name, email, country) VALUES (3, 'Channa Devote', 'cdevote14@marriott.com', 'Denmark');");
 
         auto msg = co_await e.execute_cql("SELECT email FROM users WHERE country = 'France';");
-        assert_that(msg).is_rows().with_rows({
+        assert_that(msg).is_rows().with_rows_ignore_order({
             { utf8_type->decompose(sstring("dcurrorw@techcrunch.com")) },
             { utf8_type->decompose(sstring("beassebyv@house.gov")) },
         });
@@ -409,8 +409,11 @@ SEASTAR_TEST_CASE(test_index_on_pk_ck_with_paging) {
         e.execute_cql("CREATE INDEX ON tab (ck2)").get();
 
         sstring big_string(1024 * 1024 + 7, 'j');
+        // The big rows get pk = 3 so that, in partition key order (ordered
+        // partitioning), they come after all the small rows and the first page
+        // is not cut short by the page size limit.
         for (int i = 0; i < 4; ++i) {
-            e.execute_cql(format("INSERT INTO tab (pk, pk2, ck, ck2, v, v2, v3) VALUES ({}, {}, 'hello{}', 'world{}', 1, {}, '{}')", i % 3, i, i, i, i, big_string)).get();
+            e.execute_cql(format("INSERT INTO tab (pk, pk2, ck, ck2, v, v2, v3) VALUES ({}, {}, 'hello{}', 'world{}', 1, {}, '{}')", 3, i, i, i, i, big_string)).get();
         }
         for (int i = 4; i < 2052; ++i) {
             e.execute_cql(format("INSERT INTO tab (pk, pk2, ck, ck2, v, v2, v3) VALUES ({}, {}, 'hello{}', 'world{}', 1, {}, '{}')", i % 3, i, i, i, i, "small_string")).get();
@@ -433,7 +436,7 @@ SEASTAR_TEST_CASE(test_index_on_pk_ck_with_paging) {
                     cql3::query_options::specific_options{100, nullptr, {}, api::new_timestamp()});
             auto res = e.execute_cql("SELECT * FROM tab WHERE pk2 = 1", std::move(qo)).get();
             assert_that(res).is_rows().with_rows({{
-                {int32_type->decompose(1)}, {int32_type->decompose(1)}, {utf8_type->decompose("hello1")}, {utf8_type->decompose("world1")},
+                {int32_type->decompose(3)}, {int32_type->decompose(1)}, {utf8_type->decompose("hello1")}, {utf8_type->decompose("world1")},
                 {int32_type->decompose(1)}, {int32_type->decompose(1)}, {utf8_type->decompose(big_string)}
             }});
         });
@@ -1568,26 +1571,43 @@ SEASTAR_TEST_CASE(test_computed_columns) {
     });
 }
 
-// Sorted by token value. See testset_tokens for token values.
+// Sorted by token value. Under ordered partitioning int keys sort numerically.
 static const std::vector<std::vector<bytes_opt>> testset_pks = {
-    { int32_type->decompose(5) },
-    { int32_type->decompose(1) },
     { int32_type->decompose(0) },
+    { int32_type->decompose(1) },
     { int32_type->decompose(2) },
-    { int32_type->decompose(4) },
-    { int32_type->decompose(6) },
     { int32_type->decompose(3) },
+    { int32_type->decompose(4) },
+    { int32_type->decompose(5) },
+    { int32_type->decompose(6) },
 };
 
-static const std::vector<int64_t> testset_tokens = {
-    -7509452495886106294,
-    -4069959284402364209,
-    -3485513579396041028,
-    -3248873570005575792,
-    -2729420104000364805,
-    +2705480034054113608,
-    +9010454139840013625,
-};
+// Tokens of testset_pks in table ks.t, in the same order.
+static std::vector<dht::token> testset_tokens(cql_test_env& e) {
+    auto s = e.local_db().find_schema("ks", "t");
+    std::vector<dht::token> tokens;
+    for (int i = 0; i < 7; i++) {
+        tokens.push_back(dht::get_token(*s, partition_key::from_deeply_exploded(*s, {i})));
+    }
+    return tokens;
+}
+
+// A CQL blob literal for a token.
+static sstring token_literal(const dht::token& t) {
+    return "0x" + to_hex(t.data());
+}
+
+// Tokens just above / just below a key's token: no key lies strictly between
+// t and t.next(), and an encoded key ends in 0x00 0x00, so dropping its last
+// byte gives a token above every smaller key.
+static dht::token token_after(const dht::token& t) {
+    return t.next();
+}
+static dht::token token_before(const dht::token& t) {
+    auto b = to_bytes(t.data());
+    b.resize(b.size() - 1);
+    return dht::token(dht::token::kind::key, bytes_view(b));
+}
 
 // Ref: #3423 - rows should be returned in token order,
 // using signed comparison (ref: #7443)
@@ -1635,24 +1655,27 @@ SEASTAR_TEST_CASE(test_select_with_token_range_cases) {
             return cquery_nofail(e, get_query(token_restriction).c_str());
         };
 
-        auto inclusive_inclusive_range = [](int64_t start, int64_t end) { return format("token(pk) >= {} AND token(pk) <= {}", start, end); };
-        auto exclusive_inclusive_range = [](int64_t start, int64_t end) { return format("token(pk) > {} AND token(pk) <= {}", start, end); };
-        auto inclusive_exclusive_range = [](int64_t start, int64_t end) { return format("token(pk) >= {} AND token(pk) < {}", start, end); };
-        auto exclusive_exclusive_range = [](int64_t start, int64_t end) { return format("token(pk) > {} AND token(pk) < {}", start, end); };
+        using tok = const dht::token&;
+        auto inclusive_inclusive_range = [](tok start, tok end) { return format("token(pk) >= {} AND token(pk) <= {}", token_literal(start), token_literal(end)); };
+        auto exclusive_inclusive_range = [](tok start, tok end) { return format("token(pk) > {} AND token(pk) <= {}", token_literal(start), token_literal(end)); };
+        auto inclusive_exclusive_range = [](tok start, tok end) { return format("token(pk) >= {} AND token(pk) < {}", token_literal(start), token_literal(end)); };
+        auto exclusive_exclusive_range = [](tok start, tok end) { return format("token(pk) > {} AND token(pk) < {}", token_literal(start), token_literal(end)); };
 
-        auto inclusive_infinity_range = [](int64_t start) { return format("token(pk) >= {}", start); };
-        auto exclusive_infinity_range = [](int64_t start) { return format("token(pk) > {}", start); };
+        auto inclusive_infinity_range = [](tok start) { return format("token(pk) >= {}", token_literal(start)); };
+        auto exclusive_infinity_range = [](tok start) { return format("token(pk) > {}", token_literal(start)); };
 
-        auto infinity_inclusive_range = [](int64_t end) { return format("token(pk) <= {}", end); };
-        auto infinity_exclusive_range = [](int64_t end) { return format("token(pk) < {}", end); };
+        auto infinity_inclusive_range = [](tok end) { return format("token(pk) <= {}", token_literal(end)); };
+        auto infinity_exclusive_range = [](tok end) { return format("token(pk) < {}", token_literal(end)); };
 
-        auto equal_range = [](int64_t value) { return format("token(pk) = {}", value); };
+        auto equal_range = [](tok value) { return format("token(pk) = {}", token_literal(value)); };
+
+        const auto testset_tokens = ::testset_tokens(e);
 
         auto do_tests = [&] {
             assert_that(q(inclusive_inclusive_range(testset_tokens[1], testset_tokens[5]))).is_rows().with_rows(get_result_rows(1, 5));
-            assert_that(q(inclusive_inclusive_range(testset_tokens[1], testset_tokens[5] - 1))).is_rows().with_rows(get_result_rows(1, 4));
-            assert_that(q(inclusive_inclusive_range(testset_tokens[1], testset_tokens[5] + 1))).is_rows().with_rows(get_result_rows(1, 5));
-            assert_that(q(inclusive_inclusive_range(testset_tokens[1] + 1, testset_tokens[5]))).is_rows().with_rows(get_result_rows(2, 5));
+            assert_that(q(inclusive_inclusive_range(testset_tokens[1], token_before(testset_tokens[5])))).is_rows().with_rows(get_result_rows(1, 4));
+            assert_that(q(inclusive_inclusive_range(testset_tokens[1], token_after(testset_tokens[5])))).is_rows().with_rows(get_result_rows(1, 5));
+            assert_that(q(inclusive_inclusive_range(token_after(testset_tokens[1]), testset_tokens[5]))).is_rows().with_rows(get_result_rows(2, 5));
 
             assert_that(q(exclusive_inclusive_range(testset_tokens[1], testset_tokens[4]))).is_rows().with_rows(get_result_rows(2, 4));
 
@@ -1668,24 +1691,24 @@ SEASTAR_TEST_CASE(test_select_with_token_range_cases) {
 
             assert_that(q(infinity_exclusive_range(testset_tokens[3]))).is_rows().with_rows(get_result_rows(0, 2));
             
-            assert_that(q("token(pk) < 0")).is_rows().with_rows(get_result_rows(0, 4));
+            assert_that(q(infinity_exclusive_range(testset_tokens[5]))).is_rows().with_rows(get_result_rows(0, 4));
 
-            assert_that(q("token(pk) > 0")).is_rows().with_rows(get_result_rows(5, testset_pks.size() - 1));
+            assert_that(q(inclusive_infinity_range(testset_tokens[5]))).is_rows().with_rows(get_result_rows(5, testset_pks.size() - 1));
 
             assert_that(q(equal_range(testset_tokens[3]))).is_rows().with_rows(get_result_rows(3, 3));
 
             // empty range
-            assert_that(q("token(pk) < 5 AND token(pk) > 100")).is_rows().with_size(0);
+            assert_that(q(format("token(pk) < {} AND token(pk) > {}", token_literal(testset_tokens[1]), token_literal(testset_tokens[5])))).is_rows().with_size(0);
 
             // prepared statement
             auto prepared_id = e.prepare(get_query("token(pk) >= ? AND token(pk) <= ?")).get();
             auto msg = e.execute_prepared(prepared_id, {
-                cql3::raw_value::make_value(long_type->decompose(testset_tokens[1])), cql3::raw_value::make_value(long_type->decompose(testset_tokens[5]))
+                cql3::raw_value::make_value(testset_tokens[1].data()), cql3::raw_value::make_value(testset_tokens[5].data())
             }).get();
             assert_that(msg).is_rows().with_rows(get_result_rows(1, 5));
 
             msg = e.execute_prepared(prepared_id, {
-                cql3::raw_value::make_value(long_type->decompose(testset_tokens[2])), cql3::raw_value::make_value(long_type->decompose(testset_tokens[6]))
+                cql3::raw_value::make_value(testset_tokens[2].data()), cql3::raw_value::make_value(testset_tokens[6].data())
             }).get();
             assert_that(msg).is_rows().with_rows(get_result_rows(2, 6));
         };
@@ -1705,7 +1728,7 @@ SEASTAR_TEST_CASE(test_select_with_token_range_cases) {
 
 struct testset_row {
     int pk1, pk2;
-    int64_t token;
+    dht::token token;
     int ck1, ck2;
     int v, v2;
 };
@@ -1718,17 +1741,15 @@ SEASTAR_TEST_CASE(test_select_with_token_range_filtering) {
 
         cquery_nofail(e, "CREATE TABLE t (pk1 int, pk2 int, ck1 int, ck2 int, v int, v2 int, PRIMARY KEY((pk1, pk2), ck1, ck2))");
 
-        std::map<std::pair<int, int>, int64_t> pk_to_token = {
-            {{3, 3}, -5763496297744201138},
-            {{2, 2}, -3974863545882308264},
-            {{1, 3},   793791837967961899},
-            {{2, 1},  1222388547083740924},
-            {{2, 3},  3312996362008120679},
-            {{1, 2},  4881097376275569167},
-            {{1, 1},  5765203080415074583},
-            {{3, 2},  6375086356864122089},
-            {{3, 1},  8740098777817515610}
-        };
+        std::map<std::pair<int, int>, dht::token> pk_to_token;
+        {
+            auto s = e.local_db().find_schema("ks", "t");
+            for (int pk1 = 1; pk1 <= 3; pk1++) {
+                for (int pk2 = 1; pk2 <= 3; pk2++) {
+                    pk_to_token[{pk1, pk2}] = dht::get_token(*s, partition_key::from_deeply_exploded(*s, {pk1, pk2}));
+                }
+            }
+        }
 
         std::vector<testset_row> rows;
         auto insert_row = [&](testset_row row) {
@@ -1968,11 +1989,12 @@ SEASTAR_TEST_CASE(test_deleting_ghost_rows) {
 
         // Ghost row deletion is attempted with a parallelized table scan
         when_all(
-            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) >= -9223372036854775807 AND token(v) <= 0"),
-            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 0 AND token(v) <= 10000000"),
-            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 10000000 AND token(v) <= 20000000"),
-            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 20000000 AND token(v) <= 30000000"),
-            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 30000000 AND token(v) <= 9223372036854775807")
+            // Ranges that together cover the whole (ordered, blob) token space.
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) >= 0x AND token(v) <= 0x40"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 0x40 AND token(v) <= 0x80"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 0x80 AND token(v) <= 0xc0"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 0xc0 AND token(v) <= 0xff"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 0xff")
         ).get();
         eventually([&] {
             // Ghost rows are deleted

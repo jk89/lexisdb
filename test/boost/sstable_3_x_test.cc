@@ -43,6 +43,12 @@
 
 #include <boost/range/algorithm/sort.hpp>
 #include <fmt/ranges.h>
+#include "test/lib/murmur3_partitioner.hh"
+
+// The sstable fixtures in test/resource/sstables were written with the Murmur3
+// partitioner; read them with it (see test/lib/murmur3_partitioner.hh).
+using tests::murmur3_partitioner_by_default;
+BOOST_TEST_GLOBAL_FIXTURE(murmur3_partitioner_by_default);
 
 using namespace sstables;
 

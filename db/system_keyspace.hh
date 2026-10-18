@@ -394,8 +394,8 @@ public:
         db_clock::time_point ts;
         sstring ks;
         sstring cf;
-        int64_t range_start;
-        int64_t range_end;
+        dht::token range_start;
+        dht::token range_end;
     };
 
     struct topology_requests_entry {
@@ -418,10 +418,10 @@ public:
     future<replay_positions> get_truncated_positions(table_id);
     future<> drop_truncation_rp_records();
 
-    // Converts a `dht::token_range` object to the left-open integer range (x,y] form.
+    // Converts a non-wrapping `dht::token_range` object to the right-open range [x,y) form.
     //
     // Note: perhaps this should be extracted to `dht/`, or somewhere.
-    static std::pair<int64_t, int64_t> canonical_token_range(dht::token_range tr);
+    static std::pair<dht::token, dht::token> canonical_token_range(dht::token_range tr);
 
     // When a commitlog replay happens after a successful cleanup operation,
     // we have to filter out the mutations affected by the cleanup,
@@ -448,7 +448,7 @@ public:
         std::unique_ptr<impl> _pimpl;
         ~commitlog_cleanup_local_map();
         commitlog_cleanup_local_map();
-        std::optional<db::replay_position> get(int64_t token) const;
+        std::optional<db::replay_position> get(const dht::token& token) const;
     };
     using commitlog_cleanup_map = std::unordered_map<
         std::pair<table_id, int32_t>,

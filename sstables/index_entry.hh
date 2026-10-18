@@ -235,7 +235,6 @@ public:
 class index_entry {
 private:
     managed_bytes _key;
-    mutable std::optional<dht::token> _token;
     uint64_t _position;
     managed_ref<promoted_index> _index;
 
@@ -245,12 +244,12 @@ public:
         return key_view{_key};
     }
 
-    // May allocate so must be called under allocating_section.
-    decorated_key_view get_decorated_key(const schema& s) const {
-        if (!_token) {
-            _token.emplace(s.get_partitioner().get_token(get_key()));
-        }
-        return decorated_key_view(*_token, get_key());
+    // The token of the key. Tokens are variable-length byte strings, so this
+    // is computed rather than cached in the entry, which lives in LSA memory.
+    // Call it under the standard allocator (the token's bytes are allocated
+    // with the current allocator) and under allocating_section.
+    dht::token get_token(const schema& s) const {
+        return s.get_partitioner().get_token(s, get_key());
     }
 
     uint64_t position() const { return _position; };

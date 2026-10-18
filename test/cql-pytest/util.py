@@ -17,8 +17,14 @@ import ssl
 from contextlib import contextmanager
 
 from cassandra.auth import PlainTextAuthProvider
-from cassandra.cluster import Cluster, ConsistencyLevel, ExecutionProfile, EXEC_PROFILE_DEFAULT
+from cassandra.cluster import Cluster, ConsistencyLevel, ExecutionProfile, EXEC_PROFILE_DEFAULT, ShardAwareOptions
 from cassandra.policies import RoundRobinPolicy
+
+try:
+    from cassandra.metadata import LexisToken
+    lexis_driver = True
+except ImportError:
+    lexis_driver = False
 
 def random_string(length=10, chars=string.ascii_uppercase + string.digits):
     return ''.join(random.choice(chars) for x in range(length))
@@ -227,6 +233,10 @@ def cql_session(host, port, is_ssl, username, password, request_timeout=120):
         # so let's increase them to 60 seconds. See issue #11289.
         connect_timeout = 60,
         control_connection_timeout = 60,
+        # Lexis tokens are byte strings. Drivers without Lexis support
+        # (cassandra.metadata.LexisToken) compute shards with Murmur3 integer
+        # math, which fails on them, so let the server route to the right shard.
+        shard_aware_options=ShardAwareOptions(disable=not lexis_driver),
     )
     yield cluster.connect()
     cluster.shutdown()

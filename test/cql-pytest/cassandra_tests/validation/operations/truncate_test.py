@@ -32,7 +32,7 @@ def testTruncate(cql, test_keyspace):
             execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", 1, 0, 2)
             execute(cql, table, "INSERT INTO %s (a, b, c) VALUES (?, ?, ?)", 1, 1, 3)
 
-            assertRows(execute(cql, table, "SELECT * FROM %s"), row(1, 0, 2), row(1, 1, 3), row(0, 0, 0), row(0, 1, 1))
+            assertRows(execute(cql, table, "SELECT * FROM %s"), row(0, 0, 0), row(0, 1, 1), row(1, 0, 2), row(1, 1, 3))
 
             execute(cql, table, "TRUNCATE " + arg + " %s")
 

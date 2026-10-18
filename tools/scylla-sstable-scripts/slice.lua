@@ -25,7 +25,9 @@
 -- * (X,Y) - exclusive range from X to Y
 --
 -- The key values should be hex encoded serialized keys. For partition ranges, it
--- is possible to pass tokens, as `tTOKEN`. The special values of `-inf` and
+-- is possible to pass tokens, as `tTOKEN`, where TOKEN is the hex encoded token
+-- (tokens are the order-preserving encoding of the partition key, compared as
+-- unsigned bytes). The special values of `-inf` and
 -- `+inf` can be used to denote infinity, but note that infinity should always be
 -- an exclusive bound.
 --
@@ -38,13 +40,13 @@
 -- $ scylla sstable script --script-file slice.lua --script-args "pk0=(-inf,000400000002):pk1=[000400000005,+inf)"
 --
 -- # token-range
--- $ scylla sstable script --script-file slice.lua --script-args "pk0=(t-1000,t1000)"
+-- $ scylla sstable script --script-file slice.lua --script-args "pk0=(t7f,t80000100018f0000)"
 --
 -- # a single clustering range, from key 000400000005 to inf
 -- $ scylla sstable script --script-file slice.lua --script-args "ck0=[000400000005,+inf)"
 --
 -- # partition (mixed key and token) and clustering range
--- $ scylla sstable script --script-file slice.lua --script-args "pk0=(000400000001,t1000):ck0=[000400000005,+inf)"
+-- $ scylla sstable script --script-file slice.lua --script-args "pk0=(000400000001,t80000100018f0000):ck0=[000400000005,+inf)"
 
 wr = Scylla.new_json_writer()
 
@@ -54,7 +56,7 @@ clustering_ranges = {}
 arg_key_pattern = "^([pc]r)(%d*)$"
 arg_value_pattern = "^([%(%[])(.+),(.+)([%]%)])$"
 key_pattern = "^([0-9a-f]+)$"
-token_pattern = "^t(-?%d+)$"
+token_pattern = "^t([0-9a-f]+)$"
 
 paren_to_key_weight = {
     ["["] = 0,
@@ -82,7 +84,7 @@ function make_ring_position(paren, bound)
 
     local token = string.match(bound, token_pattern)
     if token ~= nil then
-        return Scylla.new_ring_position(paren_to_token_weight[paren], tonumber(token))
+        return Scylla.new_ring_position(paren_to_token_weight[paren], token)
     end
 
     error(string.format("failed to parse %s as a partition-range bound, expected t$TOKEN, +-inf or a serialized key value", bound))

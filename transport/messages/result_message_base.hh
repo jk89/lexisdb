@@ -48,11 +48,11 @@ public:
     void add_tablet_info(locator::tablet_replica_set tablet_replicas, std::pair<dht::token, dht::token> token_range) {
         if (!tablet_replicas.empty()) {
             auto replicas_values = make_list_value(replica::get_replica_set_type(), replica::replicas_to_data_value(tablet_replicas));
-            auto v1 = data_value(dht::token::to_int64(token_range.first));
-            auto v2 = data_value(dht::token::to_int64(token_range.second));
+            auto v1 = data_value(token_range.first.to_tagged_bytes());
+            auto v2 = data_value(token_range.second.to_tagged_bytes());
 
             auto tablets_routing = make_tuple_value(replica::get_tablet_info_type(), {v1, v2, replicas_values});
-            this->add_custom_payload("tablets-routing-v1", tablets_routing.serialize_nonnull());
+            this->add_custom_payload("lexis-tablets-routing-v1", tablets_routing.serialize_nonnull());
         }
     }
 

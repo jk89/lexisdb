@@ -596,6 +596,34 @@ public:
         _use_table_aware_balancing = use_table_aware_balancing;
     }
 
+    // Picks a split point for every tablet of the table from the replicas'
+    // split hints. A tablet that already has a pinned split point keeps it:
+    // replicas may have started splitting their storage by it. A hint is only
+    // used if it lies strictly inside the tablet's current range (hints are
+    // keyed by tablet id, which a concurrent split would have changed).
+    std::unordered_map<locator::tablet_id, dht::token> choose_split_points(table_id table) const {
+        std::unordered_map<locator::tablet_id, dht::token> points;
+        const auto* stats = load_stats_for_table(table);
+        if (!stats) {
+            return points;
+        }
+        auto& tmap = _tm->tablets().get_tablet_map(table);
+        for (auto tid : tmap.tablet_ids()) {
+            if (tmap.get_pinned_split_point(tid)) {
+                continue;
+            }
+            auto it = stats->split_hints.find(tid.value());
+            if (it == stats->split_hints.end()) {
+                continue;
+            }
+            const auto& t = it->second.token;
+            if (tmap.get_tablet_id(t) == tid && t != tmap.get_last_token(tid)) {
+                points.emplace(tid, t);
+            }
+        }
+        return points;
+    }
+
     const locator::table_load_stats* load_stats_for_table(table_id id) const {
         if (!_table_load_stats) {
             return nullptr;
@@ -674,6 +702,9 @@ public:
             auto resize_decision = cluster_resize_load::to_resize_decision(size_desc);
             lblogger.info("Emitting resize decision of type {} for table {} due to avg tablet size of {}",
                           resize_decision.type_name(), table, size_desc.avg_tablet_size);
+            if (std::holds_alternative<locator::resize_decision::split>(resize_decision.way)) {
+                resize_plan.split_points[table] = choose_split_points(table);
+            }
             resize_plan.resize[table] = std::move(resize_decision);
             _stats.for_cluster().resizes_emitted++;
 
@@ -2013,7 +2044,7 @@ public:
     future<tablet_map> split_tablets(token_metadata_ptr tm, table_id table) {
         auto& tablets = tm->tablets().get_tablet_map(table);
 
-        tablet_map new_tablets(tablets.tablet_count() * 2);
+        tablet_map new_tablets = tablets.split_layout();
 
         for (tablet_id tid : tablets.tablet_ids()) {
             co_await coroutine::maybe_yield();

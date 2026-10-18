@@ -3992,7 +3992,7 @@ static future<executor::request_return_type> do_query(service::storage_proxy& pr
 static dht::token token_for_segment(int segment, int total_segments) {
     SCYLLA_ASSERT(total_segments > 1 && segment >= 0 && segment < total_segments);
     uint64_t delta = std::numeric_limits<uint64_t>::max() / total_segments;
-    return dht::token::from_int64(std::numeric_limits<int64_t>::min() + delta * segment);
+    return dht::token::bias(delta * segment);
 }
 
 static dht::partition_range get_range_for_segment(int segment, int total_segments) {

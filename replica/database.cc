@@ -1428,7 +1428,7 @@ std::optional<db::rate_limiter::can_proceed> database::account_coordinator_opera
 
     std::optional<uint32_t> table_limit = tbl.schema()->per_partition_rate_limit_options().get_max_ops_per_second(op_type);
     db::rate_limiter::label& lbl = tbl.get_rate_limiter_label_for_op_type(op_type);
-    return _rate_limiter.account_operation(lbl, dht::token::to_int64(token), *table_limit, account_and_enforce_info);
+    return _rate_limiter.account_operation(lbl, std::hash<dht::token>()(token), *table_limit, account_and_enforce_info);
 }
 
 static db::rate_limiter::can_proceed account_singular_ranges_to_rate_limit(
@@ -1451,7 +1451,7 @@ static db::rate_limiter::can_proceed account_singular_ranges_to_rate_limit(
         if (!range.is_singular()) {
             continue;
         }
-        auto token = dht::token::to_int64(ranges.front().start()->value().token());
+        auto token = std::hash<dht::token>()(ranges.front().start()->value().token());
         if (limiter.account_operation(read_label, token, table_limit, rate_limit_info) == db::rate_limiter::can_proceed::no) {
             // Don't return immediately - account all ranges first
             ret = can_proceed::no;
@@ -1916,7 +1916,7 @@ future<> database::do_apply(schema_ptr s, const frozen_mutation& m, tracing::tra
     if (!std::holds_alternative<std::monostate>(rate_limit_info) && can_apply_per_partition_rate_limit(*s, db::operation_type::write)) {
         auto table_limit = *s->per_partition_rate_limit_options().get_max_writes_per_second();
         auto& write_label = cf.get_rate_limiter_label_for_writes();
-        auto token = dht::token::to_int64(dht::get_token(*s, m.key()));
+        auto token = std::hash<dht::token>()(dht::get_token(*s, m.key()));
         if (_rate_limiter.account_operation(write_label, token, table_limit, rate_limit_info) == db::rate_limiter::can_proceed::no) {
             ++_stats->total_writes_rate_limited;
             co_await coroutine::return_exception(replica::rate_limit_exception());

@@ -77,7 +77,7 @@ tools::tablets_t do_load_system_tablets(const db::config& dbcfg,
     tools::tablets_t tablets;
     query::result_set result_set{*mut};
     for (auto& row : result_set.rows()) {
-        auto last_token = row.get_nonnull<int64_t>("last_token");
+        auto last_token = dht::token::from_tagged_bytes(row.get_nonnull<bytes>("last_token"));
         auto replica_set = row.get_data_value("replicas");
         if (replica_set) {
             tablets.emplace(last_token,

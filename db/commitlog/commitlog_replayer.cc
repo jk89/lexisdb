@@ -101,7 +101,7 @@ public:
     replay_position token_min_pos(const table_id& uuid, unsigned shard, dht::token token) const {
         replay_position rp;
         if (auto i = _cleanup_map.find({uuid, shard}); i != _cleanup_map.end()) {
-            if (auto candidate_rp = i->second.get(dht::token::to_int64(token))) {
+            if (auto candidate_rp = i->second.get(token)) {
                 rp = *candidate_rp;
             }
         }

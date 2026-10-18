@@ -19,7 +19,7 @@
 #include "db/commitlog/rp_set.hh"
 #include "utils/extremum_tracking.hh"
 #include "mutation/mutation_cleaner.hh"
-#include "utils/double-decker.hh"
+#include "utils/intrusive_btree.hh"
 #include "readers/empty_v2.hh"
 #include "readers/mutation_source.hh"
 
@@ -31,21 +31,10 @@ namespace bi = boost::intrusive;
 namespace replica {
 
 class memtable_entry {
+    intrusive_b::member_hook _link;
     dht::decorated_key _key;
     partition_entry _pe;
-    struct {
-        bool _head : 1;
-        bool _tail : 1;
-        bool _train : 1;
-    } _flags{};
 public:
-    bool is_head() const noexcept { return _flags._head; }
-    void set_head(bool v) noexcept { _flags._head = v; }
-    bool is_tail() const noexcept { return _flags._tail; }
-    void set_tail(bool v) noexcept { _flags._tail = v; }
-    bool with_train() const noexcept { return _flags._train; }
-    void set_train(bool v) noexcept { _flags._train = v; }
-
     friend class memtable;
 
     memtable_entry(schema_ptr s, dht::decorated_key key, mutation_partition p)
@@ -69,7 +58,7 @@ public:
     void upgrade_schema(logalloc::region&, const schema_ptr&, mutation_cleaner&);
 
     size_t external_memory_usage_without_rows() const {
-        return _key.key().external_memory_usage();
+        return _key.key().external_memory_usage() + _key.token().external_memory_usage();
     }
 
     size_t object_memory_size(allocation_strategy& allocator);
@@ -106,9 +95,10 @@ struct table_stats;
 // Managed by lw_shared_ptr<>.
 class memtable final : public enable_lw_shared_from_this<memtable>, private dirty_memory_manager_logalloc::size_tracked_region {
 public:
-    using partitions_type = double_decker<int64_t, memtable_entry,
-                            dht::raw_token_less_comparator, dht::ring_position_comparator,
-                            16, bplus::key_search::linear>;
+    // Ordered by the full ring position. Tokens are variable-length, so the
+    // tree is keyless: nodes point at the entries and compare them directly.
+    using partitions_type = intrusive_b::tree<memtable_entry, &memtable_entry::_link,
+                            dht::ring_position_comparator, 12, 20, intrusive_b::key_search::linear>;
 private:
     dirty_memory_manager& _dirty_mgr;
     mutation_cleaner _cleaner;

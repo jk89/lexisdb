@@ -1315,11 +1315,13 @@ SEASTAR_TEST_CASE(test_large_tablet_metadata) {
 
 SEASTAR_THREAD_TEST_CASE(test_token_ownership_splitting) {
     const auto real_min_token = dht::token::first();
-    const auto real_max_token = dht::token::last();
+    // There is no last key token: the last tablet ends at maximum_token().
+    const auto real_max_token = dht::maximum_token();
 
     for (auto&& tmap : {
         tablet_map(1),
         tablet_map(2),
+        tablet_map(3),
         tablet_map(4),
         tablet_map(16),
         tablet_map(1024),
@@ -1478,9 +1480,9 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_empty_node) {
         tm.update_topology(host1, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
         tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
         tm.update_topology(host3, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 3))}, host1);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 3))}, host2);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 3))}, host3);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 3))}, host1);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 3))}, host2);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 3))}, host3);
 
         tablet_map tmap(4);
         auto tid = tmap.first_tablet();
@@ -1669,9 +1671,9 @@ SEASTAR_THREAD_TEST_CASE(test_decommission_rf_met) {
             tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
             tm.update_topology(host3, locator::endpoint_dc_rack::default_location, node::state::being_decommissioned,
                                shard_count);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 3))}, host1);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 3))}, host2);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 3))}, host3);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 3))}, host1);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 3))}, host2);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 3))}, host3);
 
             tablet_map tmap(4);
             auto tid = tmap.first_tablet();
@@ -1769,10 +1771,10 @@ SEASTAR_THREAD_TEST_CASE(test_table_creation_during_decommission) {
             tm.update_topology(host2, dcrack, node::state::normal, shard_count);
             tm.update_topology(host3, dcrack, node::state::being_decommissioned, shard_count);
             tm.update_topology(host4, dcrack, node::state::left, shard_count);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 4))}, host1);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 4))}, host2);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 4))}, host3);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(4. / 4))}, host4);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 4))}, host1);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 4))}, host2);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 4))}, host3);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(4. / 4))}, host4);
             co_return;
         }).get();
 
@@ -1839,10 +1841,10 @@ SEASTAR_THREAD_TEST_CASE(test_decommission_two_racks) {
             tm.update_topology(host3, racks[0], node::state::normal, shard_count);
             tm.update_topology(host4, racks[1], node::state::being_decommissioned,
                                shard_count);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 4))}, host1);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 4))}, host2);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 4))}, host3);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(4. / 4))}, host4);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 4))}, host1);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 4))}, host2);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 4))}, host3);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(4. / 4))}, host4);
 
             tablet_map tmap(4);
             auto tid = tmap.first_tablet();
@@ -1945,10 +1947,10 @@ SEASTAR_THREAD_TEST_CASE(test_decommission_rack_load_failure) {
             tm.update_topology(host3, racks[0], node::state::normal, shard_count);
             tm.update_topology(host4, racks[1], node::state::being_decommissioned,
                                shard_count);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 4))}, host1);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 4))}, host2);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 4))}, host3);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(4. / 4))}, host4);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 4))}, host1);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 4))}, host2);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 4))}, host3);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(4. / 4))}, host4);
 
             tablet_map tmap(4);
             auto tid = tmap.first_tablet();
@@ -2021,9 +2023,9 @@ SEASTAR_THREAD_TEST_CASE(test_decommission_rf_not_met) {
             tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
             tm.update_topology(host3, locator::endpoint_dc_rack::default_location, node::state::being_decommissioned,
                                shard_count);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 3))}, host1);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 3))}, host2);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 3))}, host3);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 3))}, host1);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 3))}, host2);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 3))}, host3);
 
             tablet_map tmap(1);
             auto tid = tmap.first_tablet();
@@ -2078,9 +2080,9 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_works_with_in_progress_transitions)
         tm.update_topology(host1, locator::endpoint_dc_rack::default_location, node::state::normal, 1);
         tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, 1);
         tm.update_topology(host3, locator::endpoint_dc_rack::default_location, node::state::normal, 2);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 3))}, host1);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 3))}, host2);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 3))}, host3);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 3))}, host1);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 3))}, host2);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 3))}, host3);
 
         tablet_map tmap(4);
         std::optional<tablet_id> tid = tmap.first_tablet();
@@ -2151,9 +2153,9 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancer_shuffle_mode) {
         tm.update_topology(host1, locator::endpoint_dc_rack::default_location, node::state::normal, 1);
         tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, 1);
         tm.update_topology(host3, locator::endpoint_dc_rack::default_location, node::state::normal, 2);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 3))}, host1);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 3))}, host2);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 3))}, host3);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 3))}, host1);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 3))}, host2);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 3))}, host3);
 
         tablet_map tmap(4);
         std::optional<tablet_id> tid = tmap.first_tablet();
@@ -2219,10 +2221,10 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_two_empty_nodes) {
         tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
         tm.update_topology(host3, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
         tm.update_topology(host4, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 4))}, host1);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 4))}, host2);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(3. / 4))}, host3);
-        co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(4. / 4))}, host4);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 4))}, host1);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 4))}, host2);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(3. / 4))}, host3);
+        co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(4. / 4))}, host4);
 
         tablet_map tmap(16);
         for (auto tid : tmap.tablet_ids()) {
@@ -2281,8 +2283,8 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancer_disabling) {
             tm.update_host_id(host2, ip2);
             tm.update_topology(host1, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
             tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 2))}, host1);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 2))}, host2);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 2))}, host1);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 2))}, host2);
 
             tablet_map tmap(16);
             for (auto tid : tmap.tablet_ids()) {
@@ -2372,8 +2374,8 @@ SEASTAR_THREAD_TEST_CASE(test_drained_node_is_not_balanced_internally) {
             tm.update_host_id(host2, ip2);
             tm.update_topology(host1, locator::endpoint_dc_rack::default_location, locator::node::state::being_removed, shard_count);
             tm.update_topology(host2, locator::endpoint_dc_rack::default_location, node::state::normal, shard_count);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(1. / 2))}, host1);
-            co_await tm.update_normal_tokens(std::unordered_set{token(tests::d2t(2. / 2))}, host2);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(1. / 2))}, host1);
+            co_await tm.update_normal_tokens(std::unordered_set{dht::token::from_int64(tests::d2t(2. / 2))}, host2);
 
             tablet_map tmap(16);
             for (auto tid : tmap.tablet_ids()) {
@@ -2893,7 +2895,7 @@ static void execute_tablet_for_new_rf_test(calculate_tablet_replicas_for_new_rf_
         auto& topo = tm.get_topology();
         for (const auto& [ring_point, endpoint, id] : test_config.ring_points) {
             std::unordered_set<token> tokens;
-            tokens.insert(dht::token{tests::d2t(ring_point / test_config.ring_points.size())});
+            tokens.insert(dht::token::from_int64(tests::d2t(ring_point / test_config.ring_points.size())));
             topo.add_node(id, endpoint, make_endpoint_dc_rack(endpoint), locator::node::state::normal, 1);
             tm.update_host_id(id, endpoint);
             co_await tm.update_normal_tokens(std::move(tokens), id);
