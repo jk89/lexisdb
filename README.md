@@ -161,8 +161,8 @@ whichever rows hash first):
 | [lexis-python-driver](https://github.com/jk89/lexis-python-driver) | |
 | [lexis-rust-driver](https://github.com/jk89/lexis-rust-driver) | |
 | [lexis-cqlsh](https://github.com/jk89/lexis-cqlsh) | `0x6a6f6e6e79/lexis-cqlsh` |
-| [lexis-tools-java](https://github.com/jk89/lexis-tools-java) | `0x6a6f6e6e79/lexis-tools-java` |
-| [lexis-jmx](https://github.com/jk89/lexis-jmx) | `0x6a6f6e6e79/lexis-jmx` |
+| [lexis-tools-java](https://github.com/jk89/lexis-tools-java) | |
+| [lexis-jmx](https://github.com/jk89/lexis-jmx) | |
 
 Run a single node:
 
