@@ -1,0 +1,6 @@
+# The ScyllaDB build toolchain with the Lexis Python driver in place of
+# scylla-driver, so that the relocatable python3 and cqlsh packages (and the
+# Docker image built from them) ship the Lexis driver.
+FROM docker.io/scylladb/scylla-toolchain:fedora-40-20240710
+RUN pip3 uninstall -y scylla-driver \
+    && pip3 install git+https://github.com/jk89/lexis-python-driver.git@develop

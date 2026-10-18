@@ -134,7 +134,7 @@ fedora_python3_packages=(
 
 # an associative array from packages to constrains
 declare -A pip_packages=(
-    [scylla-driver]=
+    [lexis-driver]=
     [geomet]="<0.3,>=0.1"
     [traceback-with-variables]=
     [scylla-api-client]=

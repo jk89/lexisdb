@@ -11,10 +11,10 @@
 	url = https://github.com/scylladb/abseil-cpp.git
 [submodule "scylla-tools"]
 	path = tools/java
-	url = ../scylla-tools-java
+	url = ../lexis-tools-java
 [submodule "scylla-python3"]
 	path = tools/python3
 	url = https://github.com/scylladb/scylla-python3.git
 [submodule "tools/cqlsh"]
 	path = tools/cqlsh
-	url = ../scylla-cqlsh
+	url = ../lexis-cqlsh
