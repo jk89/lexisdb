@@ -37,3 +37,4 @@ clang_build
 /rust/target/
 /.toolchain-includes/
 /.clangd
+/build-release.log
