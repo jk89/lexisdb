@@ -1,6 +1,8 @@
 # Lexis
 
-<img src="lexis-icon.svg" align="left" width="120" hspace="16" vspace="4" alt="Lexis">
+<table><tr>
+<td valign="middle" width="160"><img src="lexis-icon.svg" width="160" height="196" alt="Lexis"></td>
+<td valign="middle">
 
 Lexis is a fork of ScyllaDB that replaces the Murmur3 partitioner with
 byte-ordered partitioning, built on tablets. (ScyllaDB removed its
@@ -9,7 +11,8 @@ order-preserving encoding of its partition key, so partitions are stored and
 distributed in key order, and prefix and range queries over partition keys are
 served as range reads instead of scattering across the cluster.
 
-<br clear="left">
+</td>
+</tr></table>
 
 ## The original constraint
 
@@ -154,7 +157,7 @@ whichever rows hash first):
 
 | Repository | Docker image |
 |---|---|
-| [lexis](https://github.com/jk89/lexis) (this repository, the database) | `0x6a6f6e6e79/lexis` |
+| [lexisdb](https://github.com/jk89/lexisdb) (this repository, the database) | `0x6a6f6e6e79/lexisdb` |
 | [lexis-python-driver](https://github.com/jk89/lexis-python-driver) | |
 | [lexis-rust-driver](https://github.com/jk89/lexis-rust-driver) | |
 | [lexis-cqlsh](https://github.com/jk89/lexis-cqlsh) | `0x6a6f6e6e79/lexis-cqlsh` |
@@ -163,7 +166,7 @@ whichever rows hash first):
 
 Run a single node:
 
-    docker run --name lexis -d 0x6a6f6e6e79/lexis
+    docker run --name lexisdb -d 0x6a6f6e6e79/lexisdb
 
 ## Building
 
